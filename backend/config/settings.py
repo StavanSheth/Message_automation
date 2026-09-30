@@ -26,6 +26,14 @@ class AppSettings:
     log_level: str = "INFO"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
     database_path: str = "data/app.db"
     application_data_path: str = "data"
+    browser_type: str = "chromium"  # chromium | chrome | edge
+    browser_headless: bool = True
+    browser_profile_directory: str = "data/browser_profiles"
+    browser_startup_timeout: int = 30
+    worker_heartbeat_interval: int = 15
+    worker_stale_timeout: int = 60
+    spreadsheet_navigation_timeout: int = 30
+    spreadsheet_operation_timeout: int = 30
 
     def validate(self) -> None:
         """Validate configuration values."""
@@ -55,6 +63,18 @@ class AppSettings:
             raise ValidationError(f"source_sync_interval must be positive, got {self.source_sync_interval}")
         if self.log_level.upper() not in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"):
             raise ValidationError(f"Invalid log_level: {self.log_level}")
+        if self.browser_type.lower() not in ("chromium", "chrome", "edge", "firefox", "webkit"):
+            raise ValidationError(f"Invalid browser_type: {self.browser_type}")
+        if self.browser_startup_timeout <= 0:
+            raise ValidationError(f"browser_startup_timeout must be positive, got {self.browser_startup_timeout}")
+        if self.worker_heartbeat_interval <= 0:
+            raise ValidationError(f"worker_heartbeat_interval must be positive, got {self.worker_heartbeat_interval}")
+        if self.worker_stale_timeout <= 0:
+            raise ValidationError(f"worker_stale_timeout must be positive, got {self.worker_stale_timeout}")
+        if self.spreadsheet_navigation_timeout <= 0:
+            raise ValidationError(f"spreadsheet_navigation_timeout must be positive, got {self.spreadsheet_navigation_timeout}")
+        if self.spreadsheet_operation_timeout <= 0:
+            raise ValidationError(f"spreadsheet_operation_timeout must be positive, got {self.spreadsheet_operation_timeout}")
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -67,7 +87,9 @@ class AppSettings:
             if k in valid_keys and v is not None:
                 field_type = cls.__dataclass_fields__[k].type
                 try:
-                    if field_type == int:
+                    if field_type == bool:
+                        filtered[k] = v.lower() in ("true", "1", "yes") if isinstance(v, str) else bool(v)
+                    elif field_type == int:
                         filtered[k] = int(v)
                     elif field_type == float:
                         filtered[k] = float(v)

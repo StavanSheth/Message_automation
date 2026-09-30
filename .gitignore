@@ -38,6 +38,8 @@ data/
 *.db
 *.db-wal
 *.db-shm
+browser_profiles/
+screenshots/
 
 # IDE & Editor
 .vscode/

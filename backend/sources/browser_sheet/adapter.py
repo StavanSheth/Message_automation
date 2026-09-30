@@ -35,28 +35,24 @@ class BrowserSpreadsheetSource(SourceAdapter):
         self._cached_access_status: Optional[SourceAccessStatus] = None
 
     def validate_url(self) -> bool:
-        """Validate URL syntax."""
-        try:
-            parsed = urlparse(self.url)
-            if parsed.scheme not in ("http", "https"):
-                return False
-            if not parsed.netloc:
-                return False
-            return True
-        except Exception:
-            return False
+        """Validate URL syntax and supported spreadsheet domain."""
+        from backend.sources.browser_sheet.validators import validate_spreadsheet_url, UrlValidationResult
+        result, _ = validate_spreadsheet_url(self.url)
+        return result == UrlValidationResult.VALID_SOURCE
 
     def validate_access(self) -> SourceAccessStatus:
         """
         Check access status of the spreadsheet URL.
         Distinguishes:
-        - UNSUPPORTED_STRUCTURE: invalid URL format
+        - UNSUPPORTED_STRUCTURE: invalid URL format or unsupported domain
         - ACCESSIBLE: browser confirmed page access
         - LOGIN_REQUIRED: authentication wall encountered
         - ACCESS_PROHIBITED: permissions / 403 denied
         - SOURCE_UNAVAILABLE: host unreachable or browser driver not attached
         """
-        if not self.validate_url():
+        from backend.sources.browser_sheet.validators import validate_spreadsheet_url, UrlValidationResult
+        val_result, _ = validate_spreadsheet_url(self.url)
+        if val_result != UrlValidationResult.VALID_SOURCE:
             self._cached_access_status = SourceAccessStatus.UNSUPPORTED_STRUCTURE
             return self._cached_access_status
 
