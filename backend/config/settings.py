@@ -92,24 +92,30 @@ class AppSettings:
         data: Dict[str, Any] = asdict(cls())
 
         # 1. From JSON file if provided or default exists
-        search_paths = []
         if config_path:
-            search_paths.append(Path(config_path))
+            p = Path(config_path)
+            if not p.exists() or not p.is_file():
+                raise ValidationError(f"Configuration file not found: {config_path}")
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    file_data = json.load(f)
+                    data.update(file_data)
+            except Exception as e:
+                raise ValidationError(f"Failed to parse config file '{p}': {e}")
         else:
-            search_paths.extend([
+            search_paths = [
                 Path("config/app_config.json"),
                 Path("app_config.json"),
-            ])
-
-        for p in search_paths:
-            if p.exists() and p.is_file():
-                try:
-                    with open(p, "r", encoding="utf-8") as f:
-                        file_data = json.load(f)
-                        data.update(file_data)
-                    break
-                except Exception as e:
-                    raise ValidationError(f"Failed to parse config file '{p}': {e}")
+            ]
+            for p in search_paths:
+                if p.exists() and p.is_file():
+                    try:
+                        with open(p, "r", encoding="utf-8") as f:
+                            file_data = json.load(f)
+                            data.update(file_data)
+                        break
+                    except Exception as e:
+                        raise ValidationError(f"Failed to parse config file '{p}': {e}")
 
         # 2. From environment variables (e.g. APP_LOG_LEVEL -> log_level)
         valid_keys = {f.name for f in cls.__dataclass_fields__.values()}
@@ -141,3 +147,10 @@ def set_settings(settings: AppSettings) -> None:
     global _current_settings
     settings.validate()
     _current_settings = settings
+
+
+def reset_settings() -> None:
+    """Reset the singleton settings instance (used for test isolation)."""
+    global _current_settings
+    _current_settings = None
+

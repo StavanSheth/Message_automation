@@ -1,2 +1,2 @@
 """Vision package."""
-from backend.vision.ocr import VisionService
+from backend.vision.ocr import VisionService, PlaceholderVisionService

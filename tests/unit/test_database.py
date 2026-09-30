@@ -2,6 +2,7 @@
 
 import sqlite3
 import pytest
+from pathlib import Path
 from backend.database.manager import DatabaseManager
 from backend.database.migrations import MigrationRunner
 
@@ -22,6 +23,40 @@ def test_migrations_create_complete_schema(tmp_path):
     # Re-running migrations should be idempotent
     re_applied = runner.apply_pending()
     assert len(re_applied) == 0
+
+
+def test_failed_migration_rolls_back_completely(tmp_path):
+    """Verify that a migration with an error does not apply partial tables or record in schema_migrations."""
+    db_file = str(tmp_path / "test_failed_mig.db")
+    db = DatabaseManager(db_file)
+
+    # Create temporary migrations dir
+    mig_dir = tmp_path / "mig"
+    mig_dir.mkdir()
+
+    # Create a broken migration file
+    bad_migration = mig_dir / "001_bad.sql"
+    bad_migration.write_text(
+        """
+        CREATE TABLE should_be_rolled_back (id INT PRIMARY KEY);
+        INSERT INTO non_existent_table VALUES (1);
+        """,
+        encoding="utf-8",
+    )
+
+    runner = MigrationRunner(db, migrations_dir=str(mig_dir))
+
+    with pytest.raises(sqlite3.OperationalError):
+        runner.apply_pending()
+
+    # 1. The partial table must NOT exist in the database
+    conn = db.get_connection()
+    tables = [row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table';").fetchall()]
+    assert "should_be_rolled_back" not in tables
+
+    # 2. Migration must NOT be recorded in schema_migrations
+    applied = runner.get_applied_migrations()
+    assert "001_bad.sql" not in applied
 
 
 def test_foreign_keys_enforced(tmp_path):
@@ -73,3 +108,17 @@ def test_transaction_rollback_on_failure(tmp_path):
     conn = db.get_connection()
     row = conn.execute("SELECT * FROM tasks WHERE id = 'T_ROLLBACK';").fetchone()
     assert row is None
+
+
+def test_connection_lifecycle_and_close(tmp_path):
+    db_file = str(tmp_path / "lifecycle.db")
+    db = DatabaseManager(db_file)
+    conn1 = db.get_connection()
+    assert conn1 is not None
+
+    # Closing resets local connection
+    db.close()
+    conn2 = db.get_connection()
+    assert conn2 is not None
+    assert conn2 is not conn1
+    db.close()

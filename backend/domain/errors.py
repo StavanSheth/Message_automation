@@ -82,3 +82,37 @@ class TaskStateError(AutomationError):
             retryable=False,
             task_id=task_id,
         )
+
+
+class DatabaseError(AutomationError):
+    def __init__(self, message: str, task_id: Optional[str] = None):
+        super().__init__(
+            code=ErrorCode.INTERNAL_ERROR,
+            message=message,
+            severity=ErrorSeverity.CRITICAL,
+            retryable=False,
+            task_id=task_id,
+        )
+
+
+class VerificationError(AutomationError):
+    def __init__(self, message: str, code: ErrorCode = ErrorCode.PROFILE_MISMATCH, task_id: Optional[str] = None):
+        super().__init__(
+            code=code,
+            message=message,
+            severity=ErrorSeverity.HIGH,
+            retryable=False,
+            task_id=task_id,
+        )
+
+
+class RecoveryError(AutomationError):
+    def __init__(self, message: str, task_id: Optional[str] = None):
+        super().__init__(
+            code=ErrorCode.INTERNAL_ERROR,
+            message=message,
+            severity=ErrorSeverity.HIGH,
+            retryable=True,
+            task_id=task_id,
+        )
+

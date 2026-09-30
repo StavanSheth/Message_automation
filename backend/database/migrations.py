@@ -8,6 +8,27 @@ from typing import List, Tuple
 from backend.database.manager import DatabaseManager
 
 
+def split_sql_statements(sql: str) -> List[str]:
+    """Split SQL script into discrete statements, filtering full-line comments."""
+    statements: List[str] = []
+    current: List[str] = []
+    for line in sql.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("--"):
+            continue
+        current.append(line)
+        if stripped.endswith(";"):
+            stmt = "\n".join(current).strip()
+            if stmt and stmt != ";":
+                statements.append(stmt)
+            current = []
+    if current:
+        stmt = "\n".join(current).strip()
+        if stmt and stmt != ";":
+            statements.append(stmt)
+    return statements
+
+
 class MigrationRunner:
     """Discovers, tracks, and deterministically applies database migrations."""
 
@@ -58,8 +79,11 @@ class MigrationRunner:
             with open(migration_file, "r", encoding="utf-8") as f:
                 sql_content = f.read()
 
+            statements = split_sql_statements(sql_content)
+
             with self.db.transaction() as conn:
-                conn.executescript(sql_content)
+                for stmt in statements:
+                    conn.execute(stmt)
                 now_iso = datetime.now(timezone.utc).isoformat()
                 conn.execute(
                     "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?);",
@@ -68,6 +92,7 @@ class MigrationRunner:
                 applied_now.append(version)
 
         return applied_now
+
 
     def verify_schema(self) -> bool:
         """Verify that all core tables exist in the database."""

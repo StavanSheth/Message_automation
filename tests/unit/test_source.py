@@ -97,20 +97,70 @@ def test_xlsx_update_record_writeback(tmp_path):
     wb2.close()
 
 
-def test_browser_spreadsheet_url_adapter():
-    # Valid spreadsheet URL
-    adapter_valid = BrowserSpreadsheetSource("https://docs.google.com/spreadsheets/d/abc123/edit")
-    assert adapter_valid.validate_url() is True
-    assert adapter_valid.validate_access() == SourceAccessStatus.ACCESSIBLE
-
-    # Invalid URL syntax
+def test_browser_spreadsheet_url_adapter_access_states():
+    # 1. Invalid URL syntax -> UNSUPPORTED_STRUCTURE
     adapter_invalid = BrowserSpreadsheetSource("not-a-valid-url")
     assert adapter_invalid.validate_url() is False
     assert adapter_invalid.validate_access() == SourceAccessStatus.UNSUPPORTED_STRUCTURE
 
-    # Custom access hook (e.g. login required)
-    adapter_auth = BrowserSpreadsheetSource(
+    # 2. Valid URL with no driver/hook -> SOURCE_UNAVAILABLE (cannot assume accessible without driver)
+    adapter_no_driver = BrowserSpreadsheetSource("https://docs.google.com/spreadsheets/d/abc123/edit")
+    assert adapter_no_driver.validate_url() is True
+    assert adapter_no_driver.validate_access() == SourceAccessStatus.SOURCE_UNAVAILABLE
+
+    # 3. Valid URL with hook reporting LOGIN_REQUIRED
+    adapter_login = BrowserSpreadsheetSource(
         "https://example.com/sheet",
         browser_hook=lambda url: SourceAccessStatus.LOGIN_REQUIRED,
     )
-    assert adapter_auth.validate_access() == SourceAccessStatus.LOGIN_REQUIRED
+    assert adapter_login.validate_access() == SourceAccessStatus.LOGIN_REQUIRED
+
+    # 4. Valid URL with hook reporting ACCESS_PROHIBITED
+    adapter_denied = BrowserSpreadsheetSource(
+        "https://example.com/forbidden",
+        browser_hook=lambda url: SourceAccessStatus.ACCESS_PROHIBITED,
+    )
+    assert adapter_denied.validate_access() == SourceAccessStatus.ACCESS_PROHIBITED
+
+    # 5. Valid URL with hook reporting ACCESSIBLE
+    adapter_ok = BrowserSpreadsheetSource(
+        "https://example.com/sheet",
+        browser_hook=lambda url: SourceAccessStatus.ACCESSIBLE,
+    )
+    assert adapter_ok.validate_access() == SourceAccessStatus.ACCESSIBLE
+    assert adapter_ok.open() is True
+
+
+def test_browser_spreadsheet_unimplemented_driver_fails_explicitly():
+    adapter = BrowserSpreadsheetSource("https://example.com/sheet")
+
+    # read_records must fail explicitly rather than silently returning []
+    with pytest.raises(SourceAccessError) as exc_info:
+        adapter.read_records()
+    assert "Browser spreadsheet driver is not attached" in str(exc_info.value)
+
+    # update_record must fail explicitly rather than falsely returning True
+    with pytest.raises(SourceAccessError) as exc_info:
+        adapter.update_record(1, {"status": "SENT"})
+    assert "Browser spreadsheet driver is not attached" in str(exc_info.value)
+
+
+def test_browser_spreadsheet_with_mock_driver():
+    class MockDriver:
+        def check_access(self, url: str) -> SourceAccessStatus:
+            return SourceAccessStatus.ACCESSIBLE
+
+        def read_sheet(self, url: str):
+            return ["mock_row"]
+
+        def update_cell(self, url: str, row_index: int, updates):
+            return True
+
+    adapter = BrowserSpreadsheetSource("https://example.com/sheet", driver=MockDriver())
+    assert adapter.validate_access() == SourceAccessStatus.ACCESSIBLE
+    adapter.open()
+    rows = adapter.read_records()
+    assert rows == ["mock_row"]
+    assert adapter.update_record(1, {"status": "SENT"}) is True
+    adapter.close()
+
