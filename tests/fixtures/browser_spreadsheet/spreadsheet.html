@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Test Spreadsheet</title>
+    <style>
+        table { border-collapse: collapse; width: 100%; }
+        th, td { border: 1px solid #ccc; padding: 8px; text-align: left; min-width: 120px; }
+        th { background: #f0f0f0; font-weight: bold; }
+        td { cursor: text; }
+        td:focus { outline: 2px solid #4285f4; background: #e8f0fe; }
+        #save-status { padding: 8px; color: green; }
+    </style>
+</head>
+<body>
+    <h1>Test Spreadsheet Fixture</h1>
+    <div id="save-status">All changes saved</div>
+    <table id="spreadsheet">
+        <thead>
+            <tr>
+                <th>Name</th>
+                <th>Instagram URL</th>
+                <th>Message</th>
+                <th>Replied</th>
+                <th>Expected Followers</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td contenteditable="true">Alice Johnson</td>
+                <td contenteditable="true">https://instagram.com/alice_j</td>
+                <td contenteditable="true">Hi Alice, let's connect!</td>
+                <td contenteditable="true">NO</td>
+                <td contenteditable="true">5000</td>
+            </tr>
+            <tr>
+                <td contenteditable="true">Bob Smith</td>
+                <td contenteditable="true">https://instagram.com/bob_smith</td>
+                <td contenteditable="true">Hello Bob!</td>
+                <td contenteditable="true">YES</td>
+                <td contenteditable="true">12000</td>
+            </tr>
+            <tr>
+                <td contenteditable="true">Carol Williams</td>
+                <td contenteditable="true">https://instagram.com/carol_w</td>
+                <td contenteditable="true">Hey Carol, great work!</td>
+                <td contenteditable="true">NO</td>
+                <td contenteditable="true">800</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <script>
+        // Track edits and simulate autosave
+        const saveStatus = document.getElementById('save-status');
+        let saveTimeout = null;
+
+        document.querySelectorAll('td[contenteditable]').forEach(cell => {
+            cell.addEventListener('input', () => {
+                saveStatus.textContent = 'Saving...';
+                saveStatus.style.color = 'orange';
+                clearTimeout(saveTimeout);
+                saveTimeout = setTimeout(() => {
+                    saveStatus.textContent = 'All changes saved';
+                    saveStatus.style.color = 'green';
+                }, 500);
+            });
+
+            // Enter edit mode on double-click (already contenteditable)
+            cell.addEventListener('dblclick', () => {
+                cell.focus();
+            });
+
+            // Tab commits edit and moves to next cell
+            cell.addEventListener('keydown', (e) => {
+                if (e.key === 'Tab') {
+                    e.preventDefault();
+                    cell.blur();
+                    const cells = Array.from(document.querySelectorAll('td[contenteditable]'));
+                    const idx = cells.indexOf(cell);
+                    if (idx >= 0 && idx < cells.length - 1) {
+                        cells[idx + 1].focus();
+                    }
+                }
+            });
+        });
+
+        // External modification simulation API
+        window.__testSetCellValue = function(rowIdx, colIdx, value) {
+            const trs = document.querySelectorAll('table tbody tr');
+            const tr = trs[rowIdx];
+            if (!tr) return false;
+            const cells = tr.querySelectorAll('td');
+            const cell = cells[colIdx];
+            if (!cell) return false;
+            cell.innerText = value;
+            return true;
+        };
+    </script>
+</body>
+</html>

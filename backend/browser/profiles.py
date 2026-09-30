@@ -87,3 +87,40 @@ class BrowserProfileManager:
 
     def list_profiles(self) -> List[BrowserProfile]:
         return list(self._profiles.values())
+
+    def discover_existing_profiles(self) -> List[BrowserProfile]:
+        """
+        Scan the base directory for profile folders that persist from previous runs.
+        Re-registers them in the in-memory cache for reuse.
+        """
+        discovered: List[BrowserProfile] = []
+        if not self.base_directory.is_dir():
+            return discovered
+
+        for entry in self.base_directory.iterdir():
+            if entry.is_dir() and not entry.name.startswith("."):
+                profile_id = f"prof_{entry.name}"
+                if profile_id not in self._profiles:
+                    now_iso = utc_now_iso()
+                    profile = BrowserProfile(
+                        profile_id=profile_id,
+                        profile_name=entry.name,
+                        browser_type=BrowserType.CHROMIUM,
+                        profile_path=str(entry.resolve()),
+                        status="ACTIVE",
+                        created_at=now_iso,
+                        last_used_at=now_iso,
+                    )
+                    self._profiles[profile_id] = profile
+                    discovered.append(profile)
+
+        return discovered
+
+    def deactivate_profile(self, profile_id: str) -> bool:
+        """Mark a profile as inactive without deleting files."""
+        profile = self._profiles.get(profile_id)
+        if not profile:
+            return False
+        profile.status = "INACTIVE"
+        return True
+

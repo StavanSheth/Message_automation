@@ -1,4 +1,4 @@
-"""Phase 2 unit tests: browser types, session, profiles, health, driver, URL validators, worker, execution context."""
+"""Phase 2 unit tests: browser, session, profiles, health, lifecycle, driver, validators, workers, execution, recovery."""
 
 import pytest
 import time
@@ -17,8 +17,9 @@ from backend.browser.exceptions import (
 from backend.browser.session import BrowserSessionInstance
 from backend.browser.health import BrowserHealthChecker
 from backend.browser.lifecycle import BrowserLifecycleManager
-from backend.domain.enums import ErrorCode, WorkerMode, WorkerStatus, EventCode
+from backend.domain.enums import ErrorCode, WorkerMode, WorkerStatus, EventCode, TaskState, TaskType, RepliedStatus
 from backend.domain.errors import ValidationError
+from backend.domain.models import Task, utc_now_iso
 from backend.automation.execution_context import ExecutionContext
 from backend.events.correlation import (
     generate_id, get_correlation_id, set_correlation_id, clear_correlation_id, reset_counters,
@@ -88,6 +89,16 @@ class TestBrowserExceptions:
         assert err.code == ErrorCode.SESSION_EXPIRED
         assert err.retryable is False
 
+    def test_browser_crash_error(self):
+        err = BrowserCrashError("crashed")
+        assert err.code == ErrorCode.BROWSER_CRASH
+        assert err.retryable is True
+
+    def test_browser_navigation_error(self):
+        err = BrowserNavigationError("nav failed")
+        assert err.code == ErrorCode.NETWORK_OFFLINE
+        assert err.retryable is True
+
 
 # ── Mock Browser Driver ───────────────────────────────────────────────────
 
@@ -118,8 +129,24 @@ class TestMockBrowserDriver:
         driver.set_evaluate_result("1+1", 2)
         assert driver.evaluate("1+1") == 2
 
+    def test_context_operations(self):
+        driver = MockBrowserDriver()
+        driver.launch()
+        driver.new_context()
+        assert driver._has_context
+        driver.close_context()
+        assert not driver._has_context
 
-# ── Browser Session ───────────────────────────────────────────────────────
+    def test_page_operations(self):
+        driver = MockBrowserDriver()
+        driver.launch()
+        driver.new_page()
+        assert driver._has_page
+        driver.close_page()
+        assert not driver._has_page
+
+
+# ── Browser Session Lifecycle ─────────────────────────────────────────────
 
 class TestBrowserSession:
     def test_session_start_and_stop(self):
@@ -131,11 +158,26 @@ class TestBrowserSession:
         session.stop()
         assert session.status == SessionStatus.STOPPED
 
+    def test_session_lifecycle_states(self):
+        """Verify NOT_STARTED → STARTING → READY → STOPPING → STOPPED"""
+        session = create_mock_session(auto_start=False)
+        assert session.status == SessionStatus.NOT_STARTED
+        session.start()
+        assert session.status == SessionStatus.READY
+        session.stop()
+        assert session.status == SessionStatus.STOPPED
+
     def test_session_navigate(self):
         session = create_mock_session()
         url = session.navigate("https://docs.google.com/spreadsheets/d/test")
         assert url == "https://docs.google.com/spreadsheets/d/test"
         assert session.current_url == url
+
+    def test_session_navigate_updates_activity(self):
+        session = create_mock_session()
+        before = session.last_activity_at
+        session.navigate("https://example.com")
+        assert session.last_activity_at >= before
 
     def test_session_health_check_healthy(self):
         session = create_mock_session()
@@ -168,6 +210,27 @@ class TestBrowserSession:
         with pytest.raises(BrowserCrashError):
             session.navigate("https://example.com")
 
+    def test_evaluate_on_stopped_session_raises(self):
+        session = create_mock_session()
+        session.stop()
+        with pytest.raises(BrowserCrashError):
+            session.evaluate("1+1")
+
+    def test_double_stop_is_safe(self):
+        session = create_mock_session()
+        session.stop()
+        session.stop()  # should not raise
+        assert session.status == SessionStatus.STOPPED
+
+    def test_session_crashed_state_detected(self):
+        """If driver disconnects, health check marks session CRASHED."""
+        session = create_mock_session()
+        # Simulate driver disconnect
+        session.driver._connected = False
+        result = session.health_check()
+        assert result.healthy is False
+        assert session.status == SessionStatus.CRASHED
+
 
 # ── Browser Health Checker ─────────────────────────────────────────────────
 
@@ -182,6 +245,12 @@ class TestBrowserHealthChecker:
         assert result.healthy is False
         assert result.error_code == ErrorCode.SOURCE_UNAVAILABLE.value
 
+    def test_check_distinguishes_disconnect(self):
+        session = create_mock_session()
+        session.driver._connected = False
+        result = BrowserHealthChecker.check_session(session)
+        assert result.healthy is False
+
 
 # ── Browser Lifecycle Manager ──────────────────────────────────────────────
 
@@ -193,6 +262,13 @@ class TestBrowserLifecycleManager:
         lm.stop_session("lifecycle-1")
         assert session.status == SessionStatus.STOPPED
 
+    def test_stop_unregisters_session(self):
+        lm = BrowserLifecycleManager()
+        session = create_mock_session(session_id="lm-unreg")
+        lm.register_session(session)
+        lm.stop_session("lm-unreg")
+        assert "lm-unreg" not in lm._active_sessions
+
     def test_cleanup_all(self):
         lm = BrowserLifecycleManager()
         s1 = create_mock_session(session_id="lm-1")
@@ -202,6 +278,24 @@ class TestBrowserLifecycleManager:
         lm.cleanup_all()
         assert s1.status == SessionStatus.STOPPED
         assert s2.status == SessionStatus.STOPPED
+        assert len(lm._active_sessions) == 0
+
+    def test_recover_session(self):
+        lm = BrowserLifecycleManager()
+        session = create_mock_session(session_id="lm-crash")
+        lm.register_session(session)
+        session.driver._connected = False
+        session.status = SessionStatus.CRASHED
+        recovered = lm.recover_session("lm-crash")
+        assert recovered.status == SessionStatus.READY
+        assert recovered.is_alive()
+
+    def test_double_stop_session_is_safe(self):
+        lm = BrowserLifecycleManager()
+        session = create_mock_session(session_id="lm-double")
+        lm.register_session(session)
+        lm.stop_session("lm-double")
+        lm.stop_session("lm-double")  # should not raise
 
 
 # ── Browser Profiles ───────────────────────────────────────────────────────
@@ -233,6 +327,37 @@ class TestBrowserProfiles:
         pm = BrowserProfileManager(str(tmp_path / "profiles"))
         with pytest.raises(ValidationError):
             pm.create_or_get_profile("   ")
+
+    def test_profile_traversal_protection(self, tmp_path):
+        """Path traversal must be rejected."""
+        settings = AppSettings(browser_profile_directory=str(tmp_path / "profiles"))
+        set_settings(settings)
+        from backend.browser.profiles import BrowserProfileManager
+        pm = BrowserProfileManager(str(tmp_path / "profiles"))
+        # ".." should be stripped to empty by sanitizer, raising ValidationError
+        with pytest.raises(ValidationError):
+            pm.create_or_get_profile("..")
+
+    def test_profile_persistence_discovery(self, tmp_path):
+        """Profiles on disk should be discoverable after app restart."""
+        prof_dir = tmp_path / "profiles"
+        (prof_dir / "existing_profile").mkdir(parents=True)
+        settings = AppSettings(browser_profile_directory=str(prof_dir))
+        set_settings(settings)
+        from backend.browser.profiles import BrowserProfileManager
+        pm = BrowserProfileManager(str(prof_dir))
+        discovered = pm.discover_existing_profiles()
+        assert len(discovered) == 1
+        assert discovered[0].profile_id == "prof_existing_profile"
+
+    def test_profile_deactivation(self, tmp_path):
+        settings = AppSettings(browser_profile_directory=str(tmp_path / "profiles"))
+        set_settings(settings)
+        from backend.browser.profiles import BrowserProfileManager
+        pm = BrowserProfileManager(str(tmp_path / "profiles"))
+        pm.create_or_get_profile("deactivate_me")
+        assert pm.deactivate_profile("prof_deactivate_me") is True
+        assert pm.get_profile("prof_deactivate_me").status == "INACTIVE"
 
 
 # ── URL Validators ─────────────────────────────────────────────────────────
@@ -327,6 +452,17 @@ class TestSpreadsheetStructureValidator:
         )
         assert row is None
 
+    def test_replied_status_parsing(self):
+        headers = ["Name", "Instagram URL", "Message", "Replied"]
+        _, idx_map = SpreadsheetStructureValidator.validate_headers(headers)
+        row = SpreadsheetStructureValidator.parse_row(
+            ["Test", "https://instagram.com/test", "msg", "YES"],
+            row_index=2,
+            idx_to_canonical=idx_map,
+        )
+        assert row is not None
+        assert row.replied_status == RepliedStatus.YES
+
 
 # ── Execution Context ──────────────────────────────────────────────────────
 
@@ -389,7 +525,7 @@ class TestPhase2Settings:
         assert s2.browser_headless is True
 
 
-# ── Worker (unit-level, no DB) ─────────────────────────────────────────────
+# ── Worker Unit Tests ──────────────────────────────────────────────────────
 
 class TestWorkerUnit:
     def test_worker_heartbeat(self):
@@ -437,6 +573,37 @@ class TestWorkerUnit:
         assert w.status == WorkerStatus.BUSY
         assert w.current_task_id == "task-1"
 
+    def test_worker_cannot_claim_while_busy(self):
+        from backend.workers.worker import Worker
+        mock_task_repo = MagicMock()
+        mock_task_repo.claim_task.return_value = True
+        mock_event_repo = MagicMock()
+        w = Worker(
+            worker_id="w-busy", worker_code="worker-busy",
+            mode=WorkerMode.SINGLE_BROWSER,
+            task_repo=mock_task_repo, event_repo=mock_event_repo,
+        )
+        w.start()
+        w.claim_task("task-1")
+        assert w.status == WorkerStatus.BUSY
+        assert not w.claim_task("task-2")
+
+    def test_worker_release_task(self):
+        from backend.workers.worker import Worker
+        mock_task_repo = MagicMock()
+        mock_task_repo.claim_task.return_value = True
+        mock_event_repo = MagicMock()
+        w = Worker(
+            worker_id="w-rel", worker_code="worker-rel",
+            mode=WorkerMode.SINGLE_BROWSER,
+            task_repo=mock_task_repo, event_repo=mock_event_repo,
+        )
+        w.start()
+        w.claim_task("task-1")
+        w.release_current_task()
+        assert w.status == WorkerStatus.IDLE
+        assert w.current_task_id is None
+
     def test_worker_to_record(self):
         from backend.workers.worker import Worker
         mock_task_repo = MagicMock()
@@ -479,12 +646,170 @@ class TestWorkerHealthMonitor:
             worker_id="stale1", worker_code="stale-1",
             mode=WorkerMode.SINGLE_BROWSER,
             task_repo=mock_task_repo, event_repo=mock_event_repo,
-            stale_timeout=0,  # immediately stale
+            stale_timeout=0,
         )
         w.start()
-        # Force heartbeat to old time
         old_time = (datetime.now(timezone.utc) - timedelta(seconds=10)).isoformat()
         w.last_heartbeat = old_time
         stale = WorkerHealthMonitor.find_stale_workers([w])
         assert len(stale) == 1
         assert stale[0].worker_id == "stale1"
+
+
+# ── DefaultWorkerManager ──────────────────────────────────────────────────
+
+class TestDefaultWorkerManager:
+    def test_max_worker_limit(self):
+        from backend.workers.default_manager import DefaultWorkerManager
+        s = AppSettings(max_workers=1)
+        set_settings(s)
+        mock_task_repo = MagicMock()
+        mock_event_repo = MagicMock()
+        mgr = DefaultWorkerManager(task_repo=mock_task_repo, event_repo=mock_event_repo)
+        mgr.start_worker(WorkerMode.SINGLE_BROWSER)
+        with pytest.raises(RuntimeError, match="max_workers"):
+            mgr.start_worker(WorkerMode.SINGLE_BROWSER)
+
+    def test_start_and_stop_worker(self):
+        from backend.workers.default_manager import DefaultWorkerManager
+        set_settings(AppSettings(max_workers=2))
+        mock_task_repo = MagicMock()
+        mock_event_repo = MagicMock()
+        mgr = DefaultWorkerManager(task_repo=mock_task_repo, event_repo=mock_event_repo)
+        rec = mgr.start_worker(WorkerMode.SINGLE_BROWSER)
+        assert rec.status == WorkerStatus.IDLE
+        assert mgr.active_count == 1
+        assert mgr.stop_worker(rec.id) is True
+        assert mgr.active_count == 0
+
+    def test_shutdown_all(self):
+        from backend.workers.default_manager import DefaultWorkerManager
+        set_settings(AppSettings(max_workers=3))
+        mock_task_repo = MagicMock()
+        mock_event_repo = MagicMock()
+        mgr = DefaultWorkerManager(task_repo=mock_task_repo, event_repo=mock_event_repo)
+        mgr.start_worker(WorkerMode.SINGLE_BROWSER)
+        mgr.start_worker(WorkerMode.SINGLE_BROWSER)
+        assert mgr.active_count == 2
+        mgr.shutdown_all()
+        assert mgr.active_count == 0
+
+    def test_list_workers(self):
+        from backend.workers.default_manager import DefaultWorkerManager
+        set_settings(AppSettings(max_workers=2))
+        mock_task_repo = MagicMock()
+        mock_event_repo = MagicMock()
+        mgr = DefaultWorkerManager(task_repo=mock_task_repo, event_repo=mock_event_repo)
+        mgr.start_worker(WorkerMode.SINGLE_BROWSER)
+        workers = mgr.list_workers()
+        assert len(workers) == 1
+
+
+# ── Task Executor Claim Guard ─────────────────────────────────────────────
+
+class TestTaskExecutorClaimGuard:
+    """TaskExecutor must refuse to execute unclaimed tasks."""
+
+    def test_rejects_task_not_in_running(self):
+        from backend.automation.task_executor import TaskExecutor
+        mock_task_repo = MagicMock()
+        mock_event_repo = MagicMock()
+        mock_error_repo = MagicMock()
+        task = Task(
+            id="t1", contact_id="c1", type=TaskType.MESSAGE,
+            status=TaskState.READY,
+        )
+        # get_by_id returns READY task (not RUNNING)
+        mock_task_repo.get_by_id.return_value = task
+        executor = TaskExecutor(mock_task_repo, mock_event_repo, mock_error_repo)
+        ctx = ExecutionContext(worker_id="w1")
+        adapter = MagicMock()
+        result = executor.execute_source_sync(task, ctx, adapter)
+        assert result is False
+
+    def test_rejects_task_without_lock(self):
+        from backend.automation.task_executor import TaskExecutor
+        mock_task_repo = MagicMock()
+        mock_event_repo = MagicMock()
+        mock_error_repo = MagicMock()
+        task = Task(
+            id="t2", contact_id="c2", type=TaskType.MESSAGE,
+            status=TaskState.RUNNING, lock_token=None,
+        )
+        mock_task_repo.get_by_id.return_value = task
+        executor = TaskExecutor(mock_task_repo, mock_event_repo, mock_error_repo)
+        ctx = ExecutionContext(worker_id="w1")
+        adapter = MagicMock()
+        result = executor.execute_source_sync(task, ctx, adapter)
+        assert result is False
+
+    def test_rejects_wrong_worker(self):
+        from backend.automation.task_executor import TaskExecutor
+        mock_task_repo = MagicMock()
+        mock_event_repo = MagicMock()
+        mock_error_repo = MagicMock()
+        task = Task(
+            id="t3", contact_id="c3", type=TaskType.MESSAGE,
+            status=TaskState.RUNNING, lock_token="LK1", worker_id="w-other",
+        )
+        mock_task_repo.get_by_id.return_value = task
+        executor = TaskExecutor(mock_task_repo, mock_event_repo, mock_error_repo)
+        ctx = ExecutionContext(worker_id="w1")
+        adapter = MagicMock()
+        result = executor.execute_source_sync(task, ctx, adapter)
+        assert result is False
+
+
+# ── Recovery / Reconciliation ──────────────────────────────────────────────
+
+class TestRecoveryUnit:
+    def _make_repos(self, tmp_path):
+        from backend.database.manager import DatabaseManager
+        from backend.database.migrations import MigrationRunner
+        from backend.repositories.task_repo import TaskRepository
+        from backend.repositories.event_repo import EventRepository
+        from backend.repositories.error_repo import ErrorRepository
+        from backend.repositories.contact_repo import ContactRepository
+        from backend.domain.models import Contact
+        db_path = str(tmp_path / "test_recovery.db")
+        db = DatabaseManager(db_path)
+        MigrationRunner(db).apply_pending()
+        contact_repo = ContactRepository(db)
+        for cid in ["c1", "c2", "c3"]:
+            contact_repo.create(Contact(id=cid, name=f"Contact {cid}", instagram_url=f"https://instagram.com/{cid}"))
+        return TaskRepository(db), EventRepository(db), ErrorRepository(db), db
+
+    def test_mark_running_as_interrupted(self, tmp_path):
+        task_repo, event_repo, error_repo, db = self._make_repos(tmp_path)
+        task = Task(id="t-run", contact_id="c1", type=TaskType.MESSAGE, status=TaskState.READY)
+        task_repo.create(task)
+        task_repo.claim_task("t-run", "w1", "lock1")
+        # Now task is RUNNING
+        count = task_repo.mark_running_as_interrupted()
+        assert count == 1
+        t = task_repo.get_by_id("t-run")
+        assert t.status == TaskState.INTERRUPTED
+        assert t.lock_token is None  # lock cleared
+
+    def test_recover_interrupted_requeues(self, tmp_path):
+        from backend.automation.recovery import TaskReconciliationService
+        task_repo, event_repo, error_repo, db = self._make_repos(tmp_path)
+        task = Task(id="t-int", contact_id="c2", type=TaskType.MESSAGE, status=TaskState.READY)
+        task_repo.create(task)
+        task_repo.claim_task("t-int", "w1", "lock2")
+        task_repo.mark_running_as_interrupted()
+        recovery = TaskReconciliationService(task_repo, event_repo, error_repo)
+        recovered = recovery.recover_interrupted_tasks()
+        assert len(recovered) == 1
+        assert recovered[0].status == TaskState.QUEUED
+
+    def test_unknown_result_goes_to_manual_review(self, tmp_path):
+        from backend.automation.recovery import TaskReconciliationService
+        task_repo, event_repo, error_repo, db = self._make_repos(tmp_path)
+        task = Task(id="t-unk", contact_id="c3", type=TaskType.MESSAGE, status=TaskState.READY)
+        task_repo.create(task)
+        task_repo.claim_task("t-unk", "w1", "lock3")
+        task_repo.update_state("t-unk", TaskState.RECONCILING, enforce_transition=True)
+        recovery = TaskReconciliationService(task_repo, event_repo, error_repo)
+        result = recovery.reconcile_task("t-unk", verification_confirmed=None, details="cannot determine")
+        assert result.status == TaskState.MANUAL_REVIEW

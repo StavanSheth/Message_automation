@@ -34,8 +34,23 @@ class DefaultWorkerManager(WorkerManager):
         self.settings = get_settings()
         self._workers: Dict[str, Worker] = {}
 
+    @property
+    def active_count(self) -> int:
+        """Number of active (non-stopped/crashed) workers."""
+        return sum(
+            1 for w in self._workers.values()
+            if w.status not in (WorkerStatus.STOPPED, WorkerStatus.CRASHED)
+        )
+
     def start_worker(self, mode: WorkerMode) -> WorkerRecord:
-        """Launch a new worker with a browser session."""
+        """Launch a new worker with a browser session. Enforces max_workers."""
+        max_allowed = self.settings.max_workers
+        if self.active_count >= max_allowed:
+            raise RuntimeError(
+                f"Cannot start worker: {self.active_count} active workers "
+                f"already at max_workers={max_allowed}"
+            )
+
         worker_id = generate_id("WKR")
         worker_code = f"worker-{len(self._workers) + 1}"
 
@@ -67,7 +82,10 @@ class DefaultWorkerManager(WorkerManager):
 
         worker.stop()
         if self.browser_manager and worker.session:
-            self.browser_manager.stop_session(worker.session.session_id)
+            try:
+                self.browser_manager.stop_session(worker.session.session_id)
+            except Exception as e:
+                logger.warning(f"Error stopping browser session for worker {worker_id}: {e}")
 
         del self._workers[worker_id]
         return True
@@ -89,13 +107,26 @@ class DefaultWorkerManager(WorkerManager):
         for worker in stale:
             logger.warning(f"Worker {worker.worker_id} is stale, marking as crashed")
             worker.status = WorkerStatus.CRASHED
+
+            # Release any task the worker was holding
+            if worker.current_task_id:
+                try:
+                    from backend.domain.enums import TaskState
+                    self.task_repo.update_state(
+                        worker.current_task_id,
+                        TaskState.INTERRUPTED,
+                        enforce_transition=False,
+                    )
+                except Exception as e:
+                    logger.warning(f"Could not interrupt task {worker.current_task_id}: {e}")
+
             self.event_repo.record(
                 event_code=EventCode.WORKER_CRASHED,
                 category="worker",
                 level=EventLevel.ERROR,
                 entity_type="worker",
                 entity_id=worker.worker_id,
-                payload={"reason": "heartbeat_stale"},
+                payload={"reason": "heartbeat_stale", "task_id": worker.current_task_id},
             )
             self.stop_worker(worker.worker_id)
             recovered += 1

@@ -1,7 +1,7 @@
 """Task execution foundation for browser and source operations."""
 
 from typing import Optional, Dict, Any
-from backend.domain.models import Task, utc_now_iso
+from backend.domain.models import Task, ErrorRecord, utc_now_iso
 from backend.domain.enums import (
     TaskState,
     ErrorCode,
@@ -14,6 +14,7 @@ from backend.domain.errors import (
     SourceAccessError,
     ConflictError,
     ValidationError,
+    TaskStateError,
 )
 from backend.automation.execution_context import ExecutionContext
 from backend.browser.session import BrowserSessionInstance
@@ -33,6 +34,10 @@ class TaskExecutor:
     """
     Executes browser-backed source synchronization and foundation tasks.
     Enforces Phase 2 boundaries: does NOT perform Instagram messaging.
+
+    CRITICAL: TaskExecutor NEVER transitions a task to RUNNING directly.
+    Tasks must be atomically claimed via TaskRepository.claim_task() BEFORE
+    being passed to execute_source_sync(). The executor verifies claim state.
     """
 
     def __init__(
@@ -55,11 +60,40 @@ class TaskExecutor:
         session: Optional[BrowserSessionInstance] = None,
     ) -> bool:
         """
-        Execute source validation, open, read, and synchronization for a task.
+        Execute source sync for a task that has already been atomically claimed.
+        The task MUST be in RUNNING state with a valid lock_token and worker_id
+        set by TaskRepository.claim_task().
         """
         context.task_id = task.id
         if session:
             context.session_id = session.session_id
+
+        # ── Guard: task must already be claimed (RUNNING + lock_token) ──
+        current = self.task_repo.get_by_id(task.id)
+        if not current:
+            logger.error(f"Task {task.id} not found in repository")
+            return False
+
+        if current.status != TaskState.RUNNING:
+            logger.error(
+                f"Task {task.id} is {current.status.value}, not RUNNING. "
+                "Tasks must be claimed via claim_task() before execution."
+            )
+            return False
+
+        if not current.lock_token:
+            logger.error(
+                f"Task {task.id} has no lock_token. "
+                "Tasks must be atomically claimed before execution."
+            )
+            return False
+
+        if context.worker_id and current.worker_id != context.worker_id:
+            logger.error(
+                f"Task {task.id} claimed by worker {current.worker_id}, "
+                f"but execution requested by {context.worker_id}."
+            )
+            return False
 
         logger.info(
             "Starting task source sync execution",
@@ -80,21 +114,29 @@ class TaskExecutor:
                 "session_id": context.session_id,
                 "correlation_id": context.correlation_id,
                 "source_identifier": adapter.source_identifier,
+                "lock_token": current.lock_token,
+                "attempt_count": current.attempt_count,
             },
         )
 
         try:
-            # 1. Update task to RUNNING
-            self.task_repo.update_state(task.id, TaskState.RUNNING, worker_id=context.worker_id)
-
-            # 2. Execute synchronization via SourceService
+            # Execute synchronization via SourceService
             if not self.source_service:
-                raise AutomationError("SourceService is required for task execution", code=ErrorCode.INTERNAL_ERROR)
+                raise AutomationError(
+                    code=ErrorCode.INTERNAL_ERROR,
+                    message="SourceService is required for task execution",
+                )
 
             sync_run = self.source_service.sync_source(adapter)
 
-            # 3. Transition to COMPLETED
-            self.task_repo.update_state(task.id, TaskState.COMPLETED, worker_id=context.worker_id)
+            # Transition to COMPLETED
+            self.task_repo.update_state(
+                task.id, TaskState.COMPLETED, worker_id=context.worker_id
+            )
+
+            # Release lock
+            if current.lock_token:
+                self.task_repo.release_task(task.id, current.lock_token)
 
             self.event_repo.record(
                 event_code=EventCode.TASK_EXECUTION_COMPLETED,
@@ -113,23 +155,38 @@ class TaskExecutor:
 
         except (BrowserTimeoutError, TimeoutError) as e:
             logger.error(f"Task {task.id} timed out during source execution: {e}")
-            self._handle_failure(task, context, ErrorCode.TIMEOUT, str(e), retryable=True)
+            self._handle_failure(
+                current, context, ErrorCode.TIMEOUT, str(e), retryable=True
+            )
             return False
 
-        except (BrowserCrashError, SourceAccessError) as e:
+        except BrowserCrashError as e:
+            logger.error(f"Browser crash during task {task.id}: {e}")
+            self._handle_failure(
+                current, context, ErrorCode.BROWSER_CRASH, str(e),
+                retryable=True, state=TaskState.INTERRUPTED,
+            )
+            return False
+
+        except SourceAccessError as e:
             code = getattr(e, "code", ErrorCode.SOURCE_UNAVAILABLE)
-            logger.error(f"Source access/browser error in task {task.id}: {e}")
-            self._handle_failure(task, context, code, str(e), retryable=False)
+            logger.error(f"Source access error in task {task.id}: {e}")
+            self._handle_failure(current, context, code, str(e), retryable=False)
             return False
 
         except ConflictError as e:
             logger.warning(f"Conflict detected during execution of task {task.id}: {e}")
-            self._handle_failure(task, context, ErrorCode.SYNC_CONFLICT, str(e), retryable=False, state=TaskState.MANUAL_REVIEW)
+            self._handle_failure(
+                current, context, ErrorCode.SYNC_CONFLICT, str(e),
+                retryable=False, state=TaskState.MANUAL_REVIEW,
+            )
             return False
 
         except Exception as e:
             logger.error(f"Unexpected error executing task {task.id}: {e}")
-            self._handle_failure(task, context, ErrorCode.INTERNAL_ERROR, str(e), retryable=False)
+            self._handle_failure(
+                current, context, ErrorCode.INTERNAL_ERROR, str(e), retryable=False
+            )
             return False
 
     def _handle_failure(
@@ -141,15 +198,14 @@ class TaskExecutor:
         retryable: bool,
         state: Optional[TaskState] = None,
     ) -> None:
-        """Record structured error and advance task state."""
-        from backend.domain.models import ErrorRecord
+        """Record structured error, advance task state, and release lock."""
         err = ErrorRecord(
             id=generate_id("ERR"),
             code=error_code,
             message=message,
             severity=ErrorSeverity.HIGH if not retryable else ErrorSeverity.MEDIUM,
             retryable=retryable,
-            attempt=task.attempt_count + 1,
+            attempt=task.attempt_count,
             task_id=task.id,
         )
         error_rec = self.error_repo.record(err)
@@ -162,8 +218,15 @@ class TaskExecutor:
                 worker_id=context.worker_id,
                 last_error_id=error_rec.id,
             )
-        except Exception:
-            pass
+        except TaskStateError as e:
+            logger.error(f"Could not transition task {task.id} to {next_state.value}: {e}")
+
+        # Release lock so task can be re-claimed
+        if task.lock_token:
+            try:
+                self.task_repo.release_task(task.id, task.lock_token)
+            except Exception:
+                pass
 
         self.event_repo.record(
             event_code=EventCode.TASK_EXECUTION_FAILED,
