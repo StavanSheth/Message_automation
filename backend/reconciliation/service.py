@@ -57,6 +57,14 @@ class ReconciliationService:
         """
         Move a task and message into RECONCILING / RECONCILIATION status and create a record.
         """
+        # 0. Idempotency guard: return existing pending reconciliation record
+        try:
+            existing = self.reconciliation_repo.get_by_task_id(task_id)
+            if existing and existing.state == ReconciliationState.PENDING.value:
+                return existing
+        except Exception:
+            pass
+
         # 1. Update task state
         try:
             self.task_repo.update_state(task_id, TaskState.RECONCILING, worker_id=worker_id, enforce_transition=False)

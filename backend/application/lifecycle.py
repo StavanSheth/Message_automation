@@ -92,8 +92,23 @@ class ApplicationLifecycleManager:
         except Exception as e:
             logger.error(f"Error recovering stale workers during startup: {e}")
 
-        # 4. Mark tasks left in RUNNING as INTERRUPTED, and recover safe tasks
+        # 4. Mark tasks left in RUNNING as INTERRUPTED, and route SENDING/VERIFYING to RECONCILING
         try:
+            # Check tasks in SENDING or VERIFYING that were interrupted
+            conn = self.db.get_connection()
+            cur = conn.execute("SELECT id, worker_id, status FROM tasks WHERE status IN ('SENDING', 'VERIFYING');")
+            uncertain_tasks = cur.fetchall()
+            for r in uncertain_tasks:
+                tid, wid, st = r[0], r[1], r[2]
+                if self.reconciliation_service:
+                    self.reconciliation_service.enter_reconciliation(
+                        task_id=tid,
+                        reason=f"startup_recovery_interrupted_{st.lower()}",
+                        worker_id=wid,
+                    )
+                else:
+                    self.task_repo.update_state(tid, TaskState.RECONCILING, enforce_transition=False)
+
             interrupted_count = self.task_repo.mark_running_as_interrupted()
             if self.recovery_service:
                 recovered_tasks = self.recovery_service.recover_interrupted_tasks()
@@ -102,6 +117,36 @@ class ApplicationLifecycleManager:
                 summary["interrupted_tasks_recovered"] = interrupted_count
         except Exception as e:
             logger.error(f"Error recovering interrupted tasks during startup: {e}")
+
+        # 5. Clean up orphaned execution identities left in RUNNING
+        try:
+            from backend.repositories.execution_identity_repo import ExecutionIdentityRepository
+            exec_repo = ExecutionIdentityRepository(self.db)
+            conn = self.db.get_connection()
+            cur = conn.execute("SELECT execution_key FROM execution_identities WHERE state = 'RUNNING';")
+            running_keys = [r[0] for r in cur.fetchall()]
+            for k in running_keys:
+                exec_repo.update_state(k, state="RECONCILIATION", outcome="orphaned_startup_recovery")
+            summary["orphaned_execution_identities"] = len(running_keys)
+        except Exception as e:
+            logger.debug(f"Error checking execution identities during startup: {e}")
+            summary["orphaned_execution_identities"] = 0
+
+        # 6. Detect unresolved reconciliations
+        try:
+            conn = self.db.get_connection()
+            cur = conn.execute("SELECT COUNT(*) FROM reconciliations WHERE state = 'PENDING';")
+            summary["unresolved_reconciliations"] = cur.fetchone()[0]
+        except Exception as e:
+            summary["unresolved_reconciliations"] = 0
+
+        # 7. Detect manual reviews requiring attention
+        try:
+            conn = self.db.get_connection()
+            cur = conn.execute("SELECT COUNT(*) FROM manual_reviews WHERE status = 'PENDING';")
+            summary["manual_review_items"] = cur.fetchone()[0]
+        except Exception as e:
+            summary["manual_review_items"] = 0
 
         if self.event_repo:
             self.event_repo.record(

@@ -116,6 +116,8 @@ class MigrationRunner:
             "execution_identities",
             "rate_limit_cooldowns",
             "diagnostic_artifacts",
+            "accounts",
+            "system_controls",
         }
         conn = self.db.get_connection()
         cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table';")

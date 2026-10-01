@@ -21,6 +21,9 @@ from backend.domain.enums import (
     EventCode,
     ErrorCode,
     ErrorSeverity,
+    AccountStatus,
+    TaskPriority,
+    SystemState,
 )
 
 
@@ -91,6 +94,7 @@ class Task:
     lease_acquired_at: Optional[str] = None
     lease_expires_at: Optional[str] = None
     message_hash: Optional[str] = None
+    account_id: Optional[str] = None
     created_at: str = field(default_factory=utc_now_iso)
     updated_at: str = field(default_factory=utc_now_iso)
 
@@ -180,6 +184,28 @@ class WorkerRecord:
     current_task_id: Optional[str] = None
     last_heartbeat: Optional[str] = None
     metadata_json: Optional[str] = None
+    account_id: Optional[str] = None
+    quarantine_reason: Optional[str] = None
+
+
+@dataclass
+class Account:
+    id: str
+    username: str
+    status: AccountStatus = AccountStatus.ACTIVE
+    profile_path: Optional[str] = None
+    assigned_worker_id: Optional[str] = None
+    assigned_session_id: Optional[str] = None
+    daily_send_limit: int = 50
+    daily_sends_count: int = 0
+    last_send_at: Optional[str] = None
+    created_at: str = field(default_factory=utc_now_iso)
+    updated_at: str = field(default_factory=utc_now_iso)
+
+    def to_dict(self) -> Dict[str, Any]:
+        d = asdict(self)
+        d["status"] = self.status.value if isinstance(self.status, AccountStatus) else str(self.status)
+        return d
 
 
 @dataclass

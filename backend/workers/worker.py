@@ -56,6 +56,8 @@ class Worker:
         self._lock_token: Optional[str] = None
         self._lease_id: Optional[str] = None
         self._lease_lost: bool = False
+        self.quarantine_reason: Optional[str] = None
+        self.account_id: Optional[str] = None
 
         self._lock = threading.Lock()
         self._heartbeat_thread: Optional[threading.Thread] = None
@@ -124,6 +126,80 @@ class Worker:
             payload={"worker_code": self.worker_code},
         )
         logger.info("Worker stopped", worker_id=self.worker_id)
+
+    def pause(self, reason: str = "") -> bool:
+        """Pause worker from picking up new tasks."""
+        with self._lock:
+            if self.status in (WorkerStatus.STOPPED, WorkerStatus.CRASHED):
+                return False
+            self.status = WorkerStatus.PAUSED
+            self.last_heartbeat = utc_now_iso()
+        self._persist_state()
+        self.event_repo.record(
+            event_code=EventCode.WORKER_PAUSED,
+            category="worker",
+            level=EventLevel.INFO,
+            entity_type="worker",
+            entity_id=self.worker_id,
+            payload={"reason": reason},
+        )
+        logger.info(f"Worker {self.worker_id} paused: {reason}")
+        return True
+
+    def resume(self, reason: str = "") -> bool:
+        """Resume paused, degraded, or quarantined worker back to IDLE."""
+        with self._lock:
+            if self.status not in (WorkerStatus.PAUSED, WorkerStatus.DEGRADED, WorkerStatus.QUARANTINED):
+                return False
+            self.status = WorkerStatus.IDLE
+            self.quarantine_reason = None
+            self.last_heartbeat = utc_now_iso()
+        self._persist_state()
+        self.event_repo.record(
+            event_code=EventCode.WORKER_RESUMED,
+            category="worker",
+            level=EventLevel.INFO,
+            entity_type="worker",
+            entity_id=self.worker_id,
+            payload={"reason": reason},
+        )
+        logger.info(f"Worker {self.worker_id} resumed: {reason}")
+        return True
+
+    def drain(self, reason: str = "") -> bool:
+        """Set worker to draining mode; it will stop once its current task finishes."""
+        with self._lock:
+            if self.status in (WorkerStatus.STOPPED, WorkerStatus.CRASHED):
+                return False
+            if self.status == WorkerStatus.IDLE:
+                self.status = WorkerStatus.STOPPED
+            else:
+                self.status = WorkerStatus.DRAINING
+            self.last_heartbeat = utc_now_iso()
+        self._persist_state()
+        logger.info(f"Worker {self.worker_id} set to draining: {reason}")
+        return True
+
+    def quarantine(self, reason: str = "") -> bool:
+        """Quarantine worker due to failure, challenge, or health issue."""
+        with self._lock:
+            if self.status in (WorkerStatus.STOPPED, WorkerStatus.CRASHED):
+                return False
+            self.status = WorkerStatus.QUARANTINED
+            self.quarantine_reason = reason
+            self.last_heartbeat = utc_now_iso()
+        self.release_current_task()
+        self._persist_state()
+        self.event_repo.record(
+            event_code=EventCode.WORKER_QUARANTINED,
+            category="worker",
+            level=EventLevel.ERROR,
+            entity_type="worker",
+            entity_id=self.worker_id,
+            payload={"reason": reason},
+        )
+        logger.warning(f"Worker {self.worker_id} quarantined: {reason}")
+        return True
 
     def _start_heartbeat(self) -> None:
         """Launch background daemon thread for continuous heartbeat."""
@@ -276,7 +352,15 @@ class Worker:
             self.current_task_id = None
             self._lock_token = None
             self._lease_id = None
-            if self.status not in (WorkerStatus.STOPPED, WorkerStatus.CRASHED):
+            if self.status == WorkerStatus.DRAINING:
+                self.status = WorkerStatus.STOPPED
+            elif self.status not in (
+                WorkerStatus.STOPPED,
+                WorkerStatus.CRASHED,
+                WorkerStatus.PAUSED,
+                WorkerStatus.QUARANTINED,
+                WorkerStatus.DEGRADED,
+            ):
                 self.status = WorkerStatus.IDLE
             self.last_heartbeat = utc_now_iso()
 
@@ -341,6 +425,14 @@ class Worker:
                     adapter=adapter,
                     session=self.session,
                 )
+            elif getattr(executor, "__class__", None) and executor.__class__.__name__ == "ExecutionService":
+                result = executor.execute_task(
+                    task_id=claimed_task.id,
+                    session=self.session,
+                    worker_id=self.worker_id,
+                    lease_id=self._lease_id or self._lock_token,
+                    correlation_id=context.correlation_id,
+                )
             elif hasattr(executor, "execute_task"):
                 result = executor.execute_task(
                     task=claimed_task,
@@ -372,4 +464,6 @@ class Worker:
                 status=self.status,
                 current_task_id=self.current_task_id,
                 last_heartbeat=self.last_heartbeat,
+                quarantine_reason=self.quarantine_reason,
+                account_id=self.account_id,
             )

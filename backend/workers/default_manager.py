@@ -154,6 +154,38 @@ class DefaultWorkerManager(WorkerManager):
     def get_worker(self, worker_id: str) -> Optional[Worker]:
         return self._workers.get(worker_id)
 
+    def pause_worker(self, worker_id: str, reason: str = "") -> bool:
+        worker = self._workers.get(worker_id)
+        if not worker:
+            return False
+        return worker.pause(reason)
+
+    def resume_worker(self, worker_id: str, reason: str = "") -> bool:
+        worker = self._workers.get(worker_id)
+        if not worker:
+            return False
+        return worker.resume(reason)
+
+    def drain_worker(self, worker_id: str, reason: str = "") -> bool:
+        worker = self._workers.get(worker_id)
+        if not worker:
+            return False
+        return worker.drain(reason)
+
+    def quarantine_worker(self, worker_id: str, reason: str = "") -> bool:
+        worker = self._workers.get(worker_id)
+        if not worker:
+            return False
+        return worker.quarantine(reason)
+
+    def restart_worker(self, worker_id: str) -> Optional[WorkerRecord]:
+        worker = self._workers.get(worker_id)
+        if not worker:
+            return None
+        mode = worker.mode
+        self.stop_worker(worker_id)
+        return self.start_worker(mode=mode)
+
     def recover_stale_workers(self) -> int:
         """Find and recover stale workers (in-memory and persisted) by marking them crashed, releasing locks, and cleaning up."""
         from datetime import datetime, timezone

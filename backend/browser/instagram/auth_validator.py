@@ -29,7 +29,12 @@ class InstagramAuthValidator:
                     return { state: 'CHALLENGE', reason: 'security_challenge_or_checkpoint' };
                 }
 
-                // 2. Login required / form detected
+                // 2. Session expired
+                if (body.includes('Session expired') || body.includes('Please log back in') || body.includes('Logged out')) {
+                    return { state: 'SESSION_EXPIRED', reason: 'session_expired_detected' };
+                }
+
+                // 3. Login required / form detected
                 if (
                     url.includes('/accounts/login') ||
                     url.includes('/accounts/emailsignup') ||

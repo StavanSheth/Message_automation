@@ -13,8 +13,8 @@ class WorkerRepository(BaseRepository):
     def create(self, worker: WorkerRecord) -> WorkerRecord:
         query = """
             INSERT INTO workers (
-                id, worker_code, mode, status, current_task_id, last_heartbeat, metadata_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?);
+                id, worker_code, mode, status, current_task_id, last_heartbeat, metadata_json, account_id, quarantine_reason
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
         """
         mode_val = worker.mode.value if isinstance(worker.mode, WorkerMode) else worker.mode
         status_val = worker.status.value if isinstance(worker.status, WorkerStatus) else worker.status
@@ -26,6 +26,8 @@ class WorkerRepository(BaseRepository):
             worker.current_task_id,
             worker.last_heartbeat,
             worker.metadata_json,
+            getattr(worker, "account_id", None),
+            getattr(worker, "quarantine_reason", None),
         )
         with self.db.transaction() as conn:
             conn.execute(query, params)
@@ -38,7 +40,9 @@ class WorkerRepository(BaseRepository):
                 status = ?,
                 current_task_id = ?,
                 last_heartbeat = ?,
-                metadata_json = ?
+                metadata_json = ?,
+                account_id = ?,
+                quarantine_reason = ?
             WHERE id = ?;
         """
         mode_val = worker.mode.value if isinstance(worker.mode, WorkerMode) else worker.mode
@@ -49,6 +53,8 @@ class WorkerRepository(BaseRepository):
             worker.current_task_id,
             worker.last_heartbeat,
             worker.metadata_json,
+            getattr(worker, "account_id", None),
+            getattr(worker, "quarantine_reason", None),
             worker.id,
         )
         with self.db.transaction() as conn:
@@ -90,6 +96,8 @@ class WorkerRepository(BaseRepository):
             return cursor.rowcount > 0
 
     def _row_to_worker(self, row: sqlite3.Row) -> WorkerRecord:
+        acc_id = row["account_id"] if "account_id" in row.keys() else None
+        q_reason = row["quarantine_reason"] if "quarantine_reason" in row.keys() else None
         return WorkerRecord(
             id=row["id"],
             worker_code=row["worker_code"],
@@ -98,4 +106,6 @@ class WorkerRepository(BaseRepository):
             current_task_id=row["current_task_id"],
             last_heartbeat=row["last_heartbeat"],
             metadata_json=row["metadata_json"],
+            account_id=acc_id,
+            quarantine_reason=q_reason,
         )

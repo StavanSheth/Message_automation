@@ -47,6 +47,9 @@ class TaskExecutor:
         source_service: Optional[SourceService] = None,
         instagram_service: Optional[InstagramAutomationService] = None,
         max_retries: int = 3,
+        execution_service: Optional[Any] = None,
+        message_repo: Optional[Any] = None,
+        reconciliation_service: Optional[Any] = None,
     ):
         self.task_repo = task_repo
         self.event_repo = event_repo
@@ -54,6 +57,31 @@ class TaskExecutor:
         self.source_service = source_service
         self.instagram_service = instagram_service
         self.max_retries = max_retries
+
+        if execution_service is not None:
+            self.execution_service = execution_service
+        elif instagram_service is not None:
+            from backend.application.execution_service import ExecutionService
+            from backend.repositories.message_repo import MessageRepository
+            msg_repo = message_repo or getattr(instagram_service, "message_repo", None)
+            if not msg_repo and hasattr(task_repo, "db"):
+                try:
+                    msg_repo = MessageRepository(task_repo.db)
+                except Exception:
+                    msg_repo = None
+            rec_svc = reconciliation_service or getattr(instagram_service, "reconciliation_service", None)
+            if msg_repo:
+                self.execution_service = ExecutionService(
+                    task_repo=task_repo,
+                    message_repo=msg_repo,
+                    automation_service=instagram_service,
+                    reconciliation_service=rec_svc,
+                    event_repo=event_repo,
+                )
+            else:
+                self.execution_service = None
+        else:
+            self.execution_service = None
 
     def execute_task(
         self,
@@ -133,12 +161,22 @@ class TaskExecutor:
             return False
 
         try:
-            success = self.instagram_service.execute_messaging_task(
-                task=current,
-                session=session,
-                worker_id=context.worker_id,
-                correlation_id=context.correlation_id,
-            )
+            if self.execution_service:
+                lease_id = current.lease_id or current.lock_token
+                success = self.execution_service.execute_task(
+                    task_id=current.id,
+                    session=session,
+                    worker_id=context.worker_id or current.worker_id or "",
+                    lease_id=lease_id,
+                    correlation_id=context.correlation_id,
+                )
+            else:
+                success = self.instagram_service.execute_messaging_task(
+                    task=current,
+                    session=session,
+                    worker_id=context.worker_id,
+                    correlation_id=context.correlation_id,
+                )
 
             # Re-verify task ownership before considering execution finished
             verify = self.task_repo.get_by_id(task.id)

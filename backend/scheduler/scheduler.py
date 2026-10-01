@@ -41,6 +41,8 @@ class Scheduler:
         retry_scheduler: Optional[RetryScheduler] = None,
         followup_service: Optional[Any] = None,
         message_repo: Optional[MessageRepository] = None,
+        control_service: Optional[Any] = None,
+        throttling_service: Optional[Any] = None,
     ):
         self.task_repo = task_repo
         self.followup_repo = followup_repo
@@ -49,8 +51,15 @@ class Scheduler:
         self.recovery_service = recovery_service
         self.poll_interval = poll_interval
         self.message_repo = message_repo or MessageRepository(task_repo.db)
+        self.control_service = control_service
+        self.throttling_service = throttling_service
 
-        self.task_dispatcher = task_dispatcher or TaskDispatcher(task_repo, worker_manager)
+        self.task_dispatcher = task_dispatcher or TaskDispatcher(
+            task_repo=task_repo,
+            worker_manager=worker_manager,
+            throttling_service=throttling_service,
+            control_service=control_service,
+        )
         self.retry_scheduler = retry_scheduler or RetryScheduler(task_repo)
         if followup_service is not None:
             self.followup_service = followup_service
@@ -134,6 +143,11 @@ class Scheduler:
         """
         if self.is_paused:
             return []
+
+        if self.control_service and hasattr(self.control_service, "state"):
+            from backend.domain.enums import SystemState
+            if self.control_service.state != SystemState.RUNNING:
+                return []
 
         now_iso = utc_now_iso()
 

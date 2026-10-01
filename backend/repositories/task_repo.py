@@ -85,8 +85,9 @@ class TaskRepository(BaseRepository):
                     id, contact_id, type, sequence, status, priority,
                     scheduled_at, started_at, completed_at, attempt_count,
                     worker_id, last_error_id, lock_token, locked_at,
+                    lease_id, lease_owner, lease_expires_at,
                     created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
             """
             params = (
                 task.id,
@@ -103,6 +104,9 @@ class TaskRepository(BaseRepository):
                 task.last_error_id,
                 task.lock_token,
                 task.locked_at,
+                task.lease_id,
+                task.lease_owner or task.worker_id,
+                task.lease_expires_at,
                 task.created_at,
                 task.updated_at,
             )
@@ -423,7 +427,7 @@ class TaskRepository(BaseRepository):
                 WHERE id = ?
                   AND (lease_id = ? OR lock_token = ?)
                   AND (lease_owner = ? OR worker_id = ?)
-                  AND lease_expires_at > ?;
+                  AND (lease_expires_at IS NULL OR lease_expires_at > ?);
                 """,
                 (task_id, lease_id, lease_id, worker_id, worker_id, now_iso),
             )
@@ -433,7 +437,7 @@ class TaskRepository(BaseRepository):
                 SELECT id FROM tasks
                 WHERE id = ?
                   AND (lease_id = ? OR lock_token = ?)
-                  AND lease_expires_at > ?;
+                  AND (lease_expires_at IS NULL OR lease_expires_at > ?);
                 """,
                 (task_id, lease_id, lease_id, now_iso),
             )

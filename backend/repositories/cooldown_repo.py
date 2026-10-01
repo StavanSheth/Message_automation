@@ -53,7 +53,8 @@ class CooldownRepository(BaseRepository):
         else:
             query = """
                 SELECT * FROM rate_limit_cooldowns
-                WHERE is_active = 1
+                WHERE scope = 'GLOBAL'
+                  AND is_active = 1
                   AND cooldown_until > ?
                 ORDER BY cooldown_until DESC LIMIT 1;
             """

@@ -209,6 +209,14 @@ class ExecutionService:
                     correlation_id=corr_id,
                 )
                 if success:
+                    latest_t = self.task_repo.get_by_id(task.id)
+                    if latest_t and latest_t.status != TaskState.COMPLETED:
+                        self.task_repo.update_state(task.id, TaskState.COMPLETED, worker_id=worker_id, enforce_transition=False)
+                    if self.message_repo and msg and msg.status != MessageState.SENT:
+                        try:
+                            self.message_repo.update_status(msg.id, MessageState.SENT)
+                        except Exception:
+                            pass
                     if self.execution_identity_repo:
                         try:
                             self.execution_identity_repo.update_state(exec_key, state="SENT", outcome="CONFIRMED_SENT")

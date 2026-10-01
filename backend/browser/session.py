@@ -40,9 +40,11 @@ class BrowserSessionInstance:
         profile_path: Optional[str] = None,
         profile_id: Optional[str] = None,
         config: Optional[BrowserLaunchConfig] = None,
+        account_id: Optional[str] = None,
     ):
         self.session_id = session_id
         self.worker_id = worker_id
+        self.account_id = account_id
         self.browser_type = browser_type
         self.profile_path = profile_path
         self.profile_id = profile_id

@@ -68,6 +68,16 @@ class TaskRecoveryHandler:
         """Scan and recover tasks whose lease has expired according to state policy."""
         expired = self.task_repo.recover_expired_leases()
         for task in expired:
+            if task.status == TaskState.RECONCILING and self.reconciliation_service:
+                try:
+                    self.reconciliation_service.enter_reconciliation(
+                        task_id=task.id,
+                        reason="lease_expired_during_send_or_verifying",
+                        worker_id=task.worker_id,
+                    )
+                except Exception as e:
+                    logger.warning(f"Error entering reconciliation for expired task {task.id}: {e}")
+
             if self.event_repo:
                 self.event_repo.record(
                     event_code=EventCode.LEASE_EXPIRED,
