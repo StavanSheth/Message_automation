@@ -139,10 +139,23 @@ class ApplicationLifecycleManager:
         if self.worker_manager:
             try:
                 # Release all active task leases held by workers before stopping
+                # If worker was in SENDING or VERIFYING, route through RECONCILIATION
                 for worker in self.worker_manager.list_workers():
                     if worker.current_task_id:
                         try:
-                            self.task_repo.unlock_task(worker.current_task_id)
+                            t = self.task_repo.get_by_id(worker.current_task_id)
+                            if t:
+                                if t.status in (TaskState.SENDING, TaskState.VERIFYING):
+                                    if self.reconciliation_service:
+                                        self.reconciliation_service.enter_reconciliation(
+                                            task_id=t.id,
+                                            worker_id=worker.id,
+                                            reason="shutdown_during_send",
+                                        )
+                                    else:
+                                        self.task_repo.update_state(t.id, TaskState.MANUAL_REVIEW, worker_id=worker.id, enforce_transition=False)
+                                elif t.lease_id:
+                                    self.task_repo.release_lease(t.id, t.lease_id, worker.id)
                         except Exception as e:
                             logger.warning(f"Error releasing lease for task {worker.current_task_id}: {e}")
                 if hasattr(self.worker_manager, "stop_all"):

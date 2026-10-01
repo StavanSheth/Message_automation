@@ -46,8 +46,11 @@ class TaskRecoveryHandler:
         else:
             self.task_repo.update_state(task.id, target, enforce_transition=False)
 
-        # Release lock or expired lease
-        self.task_repo.unlock_task(task.id)
+        # Release held lease safely if present
+        if getattr(task, "lease_id", None):
+            self.task_repo.release_lease(task.id, task.lease_id, getattr(task, "worker_id", None))
+        elif hasattr(self.task_repo, "unlock_task"):
+            self.task_repo.unlock_task(task.id)
 
         if self.event_repo:
             self.event_repo.record(

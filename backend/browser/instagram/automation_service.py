@@ -91,7 +91,24 @@ class InstagramAutomationService:
         self.sender = sender or InstagramMessageSender()
         self.send_verifier = send_verifier or InstagramSendVerifier()
         self.auth_validator = auth_validator or InstagramAuthValidator()
-        self.reconciliation_service = reconciliation_service
+        if reconciliation_service is not None:
+            self.reconciliation_service = reconciliation_service
+        elif hasattr(task_repo, "db"):
+            from backend.repositories.reconciliation_repo import ReconciliationRepository
+            from backend.repositories.manual_review_repo import ManualReviewRepository
+            from backend.reconciliation.service import ReconciliationService
+            rec_repo = ReconciliationRepository(task_repo.db)
+            mr_repo = ManualReviewRepository(task_repo.db)
+            self.reconciliation_service = ReconciliationService(
+                reconciliation_repo=rec_repo,
+                task_repo=self.task_repo,
+                message_repo=self.message_repo,
+                manual_review_repo=mr_repo,
+                event_repo=self.event_repo,
+            )
+        else:
+            self.reconciliation_service = None
+
         self.followup_service = followup_service
         self._rate_limit_cooldown_until: Optional[datetime] = None
         self._rate_limit_cooldown_seconds: int = getattr(
@@ -472,13 +489,21 @@ class InstagramAutomationService:
                     correlation_id=corr_id,
                     payload={"task_id": current_task.id, "reason": send_res.get("reason"), "correlation_id": corr_id},
                 )
-                self.reconciliation_service.enter_reconciliation(
-                    task_id=current_task.id,
-                    message_id=message_record.id,
-                    worker_id=worker_id,
-                    session_id=session.session_id if session else None,
-                    reason=send_res.get("reason", "send_ambiguous"),
-                )
+                if self.reconciliation_service:
+                    try:
+                        self.reconciliation_service.enter_reconciliation(
+                            task_id=current_task.id,
+                            message_id=message_record.id,
+                            worker_id=worker_id,
+                            session_id=session.session_id if session else None,
+                            reason=send_res.get("reason", "send_ambiguous"),
+                        )
+                    except Exception as rec_err:
+                        logger.error(f"ReconciliationService.enter_reconciliation failed: {rec_err}; failing closed to MANUAL_REVIEW")
+                        self.task_repo.update_state(current_task.id, TaskState.MANUAL_REVIEW, worker_id=worker_id, enforce_transition=False)
+                else:
+                    logger.warning("ReconciliationService unavailable for ambiguous send; failing closed to MANUAL_REVIEW")
+                    self.task_repo.update_state(current_task.id, TaskState.MANUAL_REVIEW, worker_id=worker_id, enforce_transition=False)
                 return False
             else:
                 # Activate rate-limit cooldown if send was blocked
@@ -542,13 +567,20 @@ class InstagramAutomationService:
             self.task_repo.update_state(current_task.id, TaskState.RECONCILING, worker_id=worker_id, enforce_transition=False)
             self.message_repo.update_status(message_record.id, MessageState.RECONCILIATION, result_code="AMBIGUOUS")
             if self.reconciliation_service:
-                self.reconciliation_service.enter_reconciliation(
-                    task_id=current_task.id,
-                    message_id=message_record.id,
-                    worker_id=worker_id,
-                    session_id=session.session_id if session else None,
-                    reason=f"Send outcome unconfirmed: {verification_res.get('reason')}",
-                )
+                try:
+                    self.reconciliation_service.enter_reconciliation(
+                        task_id=current_task.id,
+                        message_id=message_record.id,
+                        worker_id=worker_id,
+                        session_id=session.session_id if session else None,
+                        reason=f"Send outcome unconfirmed: {verification_res.get('reason')}",
+                    )
+                except Exception as rec_err:
+                    logger.error(f"ReconciliationService.enter_reconciliation failed: {rec_err}; escalating to MANUAL_REVIEW")
+                    self.task_repo.update_state(current_task.id, TaskState.MANUAL_REVIEW, worker_id=worker_id, enforce_transition=False)
+            else:
+                logger.warning("ReconciliationService unavailable for unconfirmed send; escalating to MANUAL_REVIEW")
+                self.task_repo.update_state(current_task.id, TaskState.MANUAL_REVIEW, worker_id=worker_id, enforce_transition=False)
 
             self._record_error(
                 current_task,

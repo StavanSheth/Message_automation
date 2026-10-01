@@ -26,9 +26,11 @@ class BrowserRecoveryManager:
         browser_manager: BrowserManager,
         event_repo: Optional[EventRepository] = None,
         artifacts_dir: str = "data/artifacts/diagnostics",
+        diagnostic_repo: Optional[Any] = None,
     ):
         self.browser_manager = browser_manager
         self.event_repo = event_repo
+        self.diagnostic_repo = diagnostic_repo
         self.artifacts_dir = Path(artifacts_dir)
         self.artifacts_dir.mkdir(parents=True, exist_ok=True)
 
@@ -107,14 +109,48 @@ class BrowserRecoveryManager:
             "screenshot_path": screenshot_path,
         }
 
+        # Calculate retention
+        from datetime import datetime, timezone, timedelta
+        settings = getattr(self.browser_manager, "settings", None)
+        r_days = getattr(settings, "diagnostic_artifact_retention_days", 7)
+        retention_until = (datetime.now(timezone.utc) + timedelta(days=r_days)).isoformat()
+        diag_data["retention_until"] = retention_until
+
+        artifact_file = self.artifacts_dir / f"{diag_id}.json"
         # Write metadata JSON artifact
         try:
-            artifact_file = self.artifacts_dir / f"{diag_id}.json"
             with open(artifact_file, "w", encoding="utf-8") as f:
                 json.dump(diag_data, f, indent=2)
-            self.cleanup_artifacts()
         except Exception as e:
             logger.warning(f"Failed to write diagnostic artifact: {e}")
+
+        # Persist diagnostic record in DB
+        if self.diagnostic_repo:
+            try:
+                from backend.domain.models import DiagnosticArtifact
+                diag_record = DiagnosticArtifact(
+                    id=diag_id,
+                    task_id=task_id,
+                    worker_id=worker_id,
+                    session_id=getattr(session, "session_id", None),
+                    correlation_id=correlation_id,
+                    timestamp=now_iso,
+                    artifact_type="SCREENSHOT" if screenshot_path else "ERROR_METADATA",
+                    file_path=screenshot_path or str(artifact_file),
+                    page_url=current_url,
+                    page_title=page_title,
+                    error_code=error_code,
+                    reason=task_state or worker_state or "browser_recovery",
+                    retention_until=retention_until,
+                )
+                self.diagnostic_repo.create(diag_record)
+            except Exception as e:
+                logger.debug(f"Failed to record diagnostic record in DB: {e}")
+
+        try:
+            self.cleanup_artifacts()
+        except Exception:
+            pass
 
         return diag_data
 
@@ -131,6 +167,15 @@ class BrowserRecoveryManager:
 
         deleted = 0
         cutoff = datetime.now(timezone.utc) - timedelta(days=r_days)
+
+        # 1. Clean DB records if repo configured
+        if self.diagnostic_repo and hasattr(self.diagnostic_repo, "delete_expired"):
+            try:
+                deleted += self.diagnostic_repo.delete_expired(cutoff.isoformat())
+            except Exception as e:
+                logger.debug(f"Error deleting expired diagnostic DB records: {e}")
+
+        # 2. Clean files on filesystem
         try:
             files = sorted(self.artifacts_dir.glob("DIAG-*"), key=lambda p: p.stat().st_mtime)
             for f in files:

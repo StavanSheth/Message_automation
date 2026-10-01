@@ -11,6 +11,7 @@ from backend.repositories.manual_review_repo import ManualReviewRepository
 from backend.reconciliation.service import ReconciliationService
 from backend.browser.session import BrowserSessionInstance
 from backend.browser.instagram.automation_service import InstagramAutomationService
+from backend.domain.identity import build_execution_identity, compute_execution_key, compute_message_hash
 from backend.events.correlation import generate_id
 from backend.events.logger import get_logger
 
@@ -42,10 +43,26 @@ class ExecutionService:
         self.task_repo = task_repo
         self.message_repo = message_repo
         self.automation_service = automation_service
-        self.reconciliation_service = reconciliation_service
         self.manual_review_repo = manual_review_repo
         self.event_repo = event_repo
         self._active_execution_keys: Set[str] = set()
+
+        if reconciliation_service is not None:
+            self.reconciliation_service = reconciliation_service
+        elif hasattr(automation_service, "reconciliation_service") and automation_service.reconciliation_service is not None:
+            self.reconciliation_service = automation_service.reconciliation_service
+        elif hasattr(task_repo, "db"):
+            from backend.repositories.reconciliation_repo import ReconciliationRepository
+            rec_repo = ReconciliationRepository(task_repo.db)
+            self.reconciliation_service = ReconciliationService(
+                reconciliation_repo=rec_repo,
+                task_repo=task_repo,
+                message_repo=message_repo,
+                manual_review_repo=manual_review_repo,
+                event_repo=event_repo,
+            )
+        else:
+            self.reconciliation_service = None
 
         from backend.repositories.execution_identity_repo import ExecutionIdentityRepository
         self.execution_identity_repo = execution_identity_repo or (
@@ -92,7 +109,25 @@ class ExecutionService:
             return False
 
         # ── 2. Deterministic Execution Identity & Deduplication ───
-        exec_key = self._compute_execution_key(task)
+        msg = self.message_repo.get_by_task_id(task.id)
+        msg_hash = (
+            compute_message_hash(msg.body) if (msg and msg.body)
+            else (getattr(task, "message_hash", None) or compute_message_hash(""))
+        )
+        attempt = getattr(task, "attempt_count", 1) or 1
+        new_identity = build_execution_identity(
+            contact_id=task.contact_id,
+            task_id=task.id,
+            message_hash=msg_hash,
+            attempt=attempt,
+            worker_id=worker_id,
+            session_id=getattr(session, "session_id", None),
+            correlation_id=corr_id,
+            message_id=msg.id if msg else None,
+            state="RUNNING",
+        )
+        exec_key = new_identity.execution_key
+
         if exec_key in self._active_execution_keys:
             logger.warning(f"Duplicate in-flight execution for key {exec_key}; rejecting")
             return False
@@ -113,22 +148,15 @@ class ExecutionService:
                     if existing.state == "RUNNING" and existing.worker_id and existing.worker_id != worker_id:
                         logger.warning(f"Execution {exec_key} is currently RUNNING by worker {existing.worker_id}; rejecting concurrent attempt")
                         return False
+                    if existing.state in ("MANUAL_REVIEW", "FAILED"):
+                        logger.warning(f"Execution {exec_key} is in terminal/review state {existing.state}; aborting execution")
+                        return False
             except Exception as e:
                 logger.debug(f"Could not check execution identity in DB: {e}")
 
         self._active_execution_keys.add(exec_key)
         if self.execution_identity_repo:
             try:
-                from backend.domain.models import ExecutionIdentity
-                new_identity = ExecutionIdentity(
-                    execution_key=exec_key,
-                    task_id=task.id,
-                    contact_id=task.contact_id,
-                    worker_id=worker_id,
-                    session_id=getattr(session, "session_id", None),
-                    correlation_id=corr_id,
-                    state="RUNNING",
-                )
                 self.execution_identity_repo.create(new_identity)
             except Exception as e:
                 logger.warning(f"Execution identity creation conflict for {exec_key}: {e}; aborting duplicate concurrent execution")
@@ -220,7 +248,11 @@ class ExecutionService:
             self._active_execution_keys.discard(exec_key)
 
     @staticmethod
-    def _compute_execution_key(task: Task) -> str:
+    def _compute_execution_key(task: Task, message_hash: str = "", attempt: int = 1) -> str:
         """Deterministic key for deduplicating concurrent executions of the same logical task."""
-        raw = f"{task.contact_id}|{task.id}|{task.type.value}|{task.sequence}"
-        return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
+        return compute_execution_key(
+            contact_id=task.contact_id,
+            task_id=task.id,
+            message_hash=message_hash or getattr(task, "message_hash", None) or "",
+            attempt=attempt if attempt is not None else (getattr(task, "attempt_count", 1) or 1),
+        )

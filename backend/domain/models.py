@@ -362,3 +362,24 @@ class RateLimitCooldown:
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
+
+@dataclass
+class DiagnosticArtifact:
+    id: str
+    task_id: Optional[str] = None
+    worker_id: Optional[str] = None
+    session_id: Optional[str] = None
+    correlation_id: Optional[str] = None
+    timestamp: str = field(default_factory=utc_now_iso)
+    artifact_type: str = "ERROR_METADATA"
+    file_path: Optional[str] = None
+    page_url: Optional[str] = None
+    page_title: Optional[str] = None
+    error_code: Optional[str] = None
+    reason: Optional[str] = None
+    retention_until: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+

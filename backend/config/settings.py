@@ -47,6 +47,9 @@ class AppSettings:
     session_validation_timeout: int = 15
     manual_review_timeout: int = 86400
     retry_jitter: bool = True
+    retry_max_delay: float = 300.0
+    max_retry_attempts: int = 3
+    diagnostic_retention: int = 7
 
     def validate(self) -> None:
         """Validate configuration values."""
@@ -108,6 +111,12 @@ class AppSettings:
             raise ValidationError(f"max_diagnostic_artifacts must be positive, got {self.max_diagnostic_artifacts}")
         if self.manual_review_timeout <= 0:
             raise ValidationError(f"manual_review_timeout must be positive, got {self.manual_review_timeout}")
+        if self.retry_max_delay <= 0:
+            raise ValidationError(f"retry_max_delay must be positive, got {self.retry_max_delay}")
+        if self.max_retry_attempts <= 0:
+            raise ValidationError(f"max_retry_attempts must be positive, got {self.max_retry_attempts}")
+        if self.diagnostic_retention < 0:
+            raise ValidationError(f"diagnostic_retention must be non-negative, got {self.diagnostic_retention}")
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

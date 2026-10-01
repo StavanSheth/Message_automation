@@ -64,6 +64,14 @@ class ReconciliationService:
             logger.warning(f"Could not update task {task_id} to RECONCILING: {e}")
 
         # 2. Update message state
+        if not message_id:
+            try:
+                m = self.message_repo.get_by_task_id(task_id)
+                if m:
+                    message_id = m.id
+            except Exception:
+                pass
+
         if message_id:
             try:
                 self.message_repo.update_status(message_id, MessageState.RECONCILIATION, result_code="AMBIGUOUS")

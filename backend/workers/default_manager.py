@@ -170,17 +170,30 @@ class DefaultWorkerManager(WorkerManager):
                 except Exception as e:
                     logger.warning(f"Failed to update worker {worker.worker_id} in repo: {e}")
 
-            # Release any task the worker was holding and mark INTERRUPTED
+            # Release any task the worker was holding and mark INTERRUPTED or route to RECONCILIATION
             if worker.current_task_id:
                 try:
-                    self.task_repo.update_state(
-                        worker.current_task_id,
-                        TaskState.INTERRUPTED,
-                        enforce_transition=False,
-                    )
-                    self.task_repo.unlock_task(worker.current_task_id)
+                    t = self.task_repo.get_by_id(worker.current_task_id)
+                    if t and t.status in (TaskState.SENDING, TaskState.VERIFYING):
+                        if hasattr(self, "reconciliation_service") and self.reconciliation_service:
+                            self.reconciliation_service.enter_reconciliation(
+                                task_id=t.id,
+                                worker_id=worker.worker_id,
+                                reason="stale_worker_during_send",
+                            )
+                        else:
+                            self.task_repo.update_state(t.id, TaskState.MANUAL_REVIEW, worker_id=worker.worker_id, enforce_transition=False)
+                    else:
+                        self.task_repo.update_state(
+                            worker.current_task_id,
+                            TaskState.INTERRUPTED,
+                            enforce_transition=False,
+                        )
+                        lid = (t.lease_id or t.lock_token) if t else None
+                        if lid:
+                            self.task_repo.release_lease(worker.current_task_id, lid, worker.worker_id)
                 except Exception as e:
-                    logger.warning(f"Could not interrupt task {worker.current_task_id}: {e}")
+                    logger.warning(f"Could not safely recover task {worker.current_task_id}: {e}")
 
             self.event_repo.record(
                 event_code=EventCode.WORKER_CRASHED,
@@ -211,12 +224,25 @@ class DefaultWorkerManager(WorkerManager):
                                     prec.status = WorkerStatus.CRASHED
                                     self.worker_repo.update(prec)
                                     if prec.current_task_id:
-                                        self.task_repo.update_state(
-                                            prec.current_task_id,
-                                            TaskState.INTERRUPTED,
-                                            enforce_transition=False,
-                                        )
-                                        self.task_repo.unlock_task(prec.current_task_id)
+                                        t = self.task_repo.get_by_id(prec.current_task_id)
+                                        if t and t.status in (TaskState.SENDING, TaskState.VERIFYING):
+                                            if hasattr(self, "reconciliation_service") and self.reconciliation_service:
+                                                self.reconciliation_service.enter_reconciliation(
+                                                    task_id=t.id,
+                                                    worker_id=prec.id,
+                                                    reason="stale_worker_during_send",
+                                                )
+                                            else:
+                                                self.task_repo.update_state(t.id, TaskState.MANUAL_REVIEW, worker_id=prec.id, enforce_transition=False)
+                                        else:
+                                            self.task_repo.update_state(
+                                                prec.current_task_id,
+                                                TaskState.INTERRUPTED,
+                                                enforce_transition=False,
+                                            )
+                                            lid = (t.lease_id or t.lock_token) if t else None
+                                            if lid:
+                                                self.task_repo.release_lease(prec.current_task_id, lid, prec.id)
                                     self.event_repo.record(
                                         event_code=EventCode.WORKER_CRASHED,
                                         category="worker",
