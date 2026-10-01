@@ -198,7 +198,7 @@ class DefaultWorkerManager(WorkerManager):
             try:
                 all_persisted = self.worker_repo.list_all()
                 now = datetime.now(timezone.utc)
-                stale_threshold = getattr(self.settings, "stale_threshold_seconds", 60)
+                stale_threshold = getattr(self.settings, "worker_stale_timeout", 60)
                 for prec in all_persisted:
                     if prec.id in recovered_ids:
                         continue

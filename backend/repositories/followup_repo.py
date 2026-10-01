@@ -108,6 +108,22 @@ class FollowupRepository(BaseRepository):
             )
             return cursor.rowcount > 0
 
+    def claim_for_materialization(self, followup_id: str) -> bool:
+        """
+        Atomically transition followup from SCHEDULED to DUE for task materialization.
+        Prevents race conditions across concurrent scheduler ticks.
+        """
+        now_iso = utc_now_iso()
+        query = """
+            UPDATE followups SET
+                status = 'DUE',
+                updated_at = ?
+            WHERE id = ? AND status = 'SCHEDULED';
+        """
+        with self.db.transaction() as conn:
+            cursor = conn.execute(query, (now_iso, followup_id))
+            return cursor.rowcount > 0
+
     def schedule(self, followup_id: str, scheduled_at_iso: str) -> bool:
         """Schedule a pending followup with an explicit execution time."""
         now_iso = utc_now_iso()

@@ -1,8 +1,6 @@
-"""Scheduler service contract and complete background scheduling engine."""
+"""Production-grade Scheduler Engine coordinating dispatching, retries, and follow-ups."""
 
 import threading
-import time
-from abc import ABC, abstractmethod
 from typing import List, Optional, Any
 from backend.domain.models import Task, Followup, utc_now_iso
 from backend.domain.enums import TaskState, TaskType, FollowupStatus, RepliedStatus
@@ -10,67 +8,24 @@ from backend.domain.errors import DuplicateTaskError
 from backend.repositories.task_repo import TaskRepository
 from backend.repositories.followup_repo import FollowupRepository
 from backend.repositories.contact_repo import ContactRepository
+from backend.scheduler.task_dispatcher import TaskDispatcher
+from backend.scheduler.retry_scheduler import RetryScheduler
 from backend.events.correlation import generate_id
 from backend.events.logger import get_logger
 
-logger = get_logger("scheduler_service")
+logger = get_logger("scheduler")
 
 
-class SchedulerService(ABC):
-    """Contract for task scheduling and due follow-up processing."""
-
-    @abstractmethod
-    def start(self) -> None:
-        """Start scheduler background loop."""
-        pass
-
-    @abstractmethod
-    def pause(self) -> None:
-        """Pause scheduler loop."""
-        pass
-
-    @abstractmethod
-    def resume(self) -> None:
-        """Resume scheduler loop."""
-        pass
-
-    @abstractmethod
-    def stop(self) -> None:
-        """Stop scheduler background loop cleanly."""
-        pass
-
-    @abstractmethod
-    def tick(self) -> List[Task]:
-        """Single scheduler evaluation step to dispatch due tasks."""
-        pass
-
-    @abstractmethod
-    def schedule_followup(self, contact_id: str, sequence: int) -> bool:
-        """Schedule a follow-up task when prerequisite completes."""
-        pass
-
-    @abstractmethod
-    def cancel_followups(self, contact_id: str, reason: str = "REPLIED") -> int:
-        """Cancel pending follow-ups for a contact."""
-        pass
-
-
-from backend.scheduler.scheduler import Scheduler
-from backend.scheduler.task_dispatcher import TaskDispatcher
-from backend.scheduler.retry_scheduler import RetryScheduler
-
-
-class SchedulerFoundationService(Scheduler, SchedulerService):
+class Scheduler:
     """
-    Production-grade scheduler engine implementing:
+    Central automation scheduler coordinating:
     - Thread-controlled background loop with clean shutdown.
-    - Due follow-up evaluation and atomic task instantiation.
+    - Due follow-up evaluation and atomic task materialization.
     - Prerequisite task validation before scheduling follow-ups.
     - Automatic cancellation when contact replies.
-    - Retry evaluation via RetryScheduler.
+    - Retry evaluation and backoff via RetryScheduler.
     - Worker capacity respecting dispatching via TaskDispatcher.
     - Crash/stale task recovery coordination.
-    - Continuous operation after individual task failure.
     """
 
     def __init__(
@@ -81,6 +36,8 @@ class SchedulerFoundationService(Scheduler, SchedulerService):
         worker_manager: Optional[Any] = None,
         recovery_service: Optional[Any] = None,
         poll_interval: float = 1.0,
+        task_dispatcher: Optional[TaskDispatcher] = None,
+        retry_scheduler: Optional[RetryScheduler] = None,
     ):
         self.task_repo = task_repo
         self.followup_repo = followup_repo
@@ -88,6 +45,9 @@ class SchedulerFoundationService(Scheduler, SchedulerService):
         self.worker_manager = worker_manager
         self.recovery_service = recovery_service
         self.poll_interval = poll_interval
+
+        self.task_dispatcher = task_dispatcher or TaskDispatcher(task_repo, worker_manager)
+        self.retry_scheduler = retry_scheduler or RetryScheduler(task_repo)
 
         self.is_paused: bool = False
         self.is_running: bool = False
@@ -151,10 +111,11 @@ class SchedulerFoundationService(Scheduler, SchedulerService):
         """
         Single evaluation cycle:
         1. Honor paused state.
-        2. Recover stale workers / interrupted tasks if recovery service attached.
-        3. Evaluate due follow-ups (respecting replied status and prerequisite completion).
-        4. Query ready tasks.
-        5. Dispatch ready tasks to available workers if worker_manager attached.
+        2. Recover stale workers / interrupted tasks.
+        3. Evaluate retries for tasks in RETRY_WAIT.
+        4. Atomically materialize due follow-ups into Tasks.
+        5. Query ready tasks.
+        6. Dispatch ready tasks via TaskDispatcher.
         Returns list of ready tasks.
         """
         if self.is_paused:
@@ -175,7 +136,13 @@ class SchedulerFoundationService(Scheduler, SchedulerService):
             except Exception as e:
                 logger.warning(f"Error recovering interrupted tasks in tick: {e}")
 
-        # ── Step 2: Check due follow-ups ───────────────────────────
+        # ── Step 2: Evaluate retries ───────────────────────────────
+        try:
+            self.retry_scheduler.evaluate_retries()
+        except Exception as e:
+            logger.warning(f"Error evaluating retries in tick: {e}")
+
+        # ── Step 3: Materialize due follow-ups atomically ───────────
         due_followups = self.followup_repo.list_due(now_iso)
         for fu in due_followups:
             contact = self.contact_repo.get_by_id(fu.contact_id)
@@ -183,7 +150,7 @@ class SchedulerFoundationService(Scheduler, SchedulerService):
                 self.followup_repo.update_status(fu.id, FollowupStatus.CANCELLED, cancel_reason="REPLIED")
                 continue
 
-            # Verify prerequisite completion before task instantiation if prerequisite exists
+            # Verify prerequisite completion before task instantiation
             if fu.sequence == 1:
                 prereq = self.task_repo.get_by_contact_and_type(fu.contact_id, TaskType.MESSAGE, sequence=0)
                 if prereq and prereq.status != TaskState.COMPLETED:
@@ -192,6 +159,10 @@ class SchedulerFoundationService(Scheduler, SchedulerService):
                 prereq = self.task_repo.get_by_contact_and_type(fu.contact_id, TaskType.FOLLOW_UP_1, sequence=1)
                 if prereq and prereq.status != TaskState.COMPLETED:
                     continue
+
+            # Atomic claim for materialization prevents concurrency race conditions
+            if not self.followup_repo.claim_for_materialization(fu.id):
+                continue
 
             task_type = TaskType.FOLLOW_UP_1 if fu.sequence == 1 else TaskType.FOLLOW_UP_2
             existing = self.task_repo.get_by_contact_and_type(fu.contact_id, task_type, sequence=fu.sequence)
@@ -208,19 +179,17 @@ class SchedulerFoundationService(Scheduler, SchedulerService):
                         updated_at=now_iso,
                     )
                     self.task_repo.create(new_task)
-                    self.followup_repo.update_status(fu.id, FollowupStatus.DUE)
                 except DuplicateTaskError:
                     pass
 
-        # ── Step 3: Query ready tasks ──────────────────────────────
+        # ── Step 4: Query ready tasks ──────────────────────────────
         ready_tasks = self.task_repo.list_ready()
 
-        # ── Step 4: Dispatch to workers if worker_manager attached ─
-        if self.worker_manager and hasattr(self.worker_manager, "process_tasks"):
-            try:
-                self.worker_manager.process_tasks()
-            except Exception as e:
-                logger.warning(f"Error dispatching tasks to worker manager: {e}")
+        # ── Step 5: Dispatch to workers via TaskDispatcher ─────────
+        try:
+            self.task_dispatcher.dispatch_ready_tasks()
+        except Exception as e:
+            logger.warning(f"Error dispatching tasks via TaskDispatcher: {e}")
 
         return ready_tasks
 

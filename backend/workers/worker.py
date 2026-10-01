@@ -14,6 +14,7 @@ from backend.automation.execution_context import ExecutionContext
 from backend.repositories.task_repo import TaskRepository
 from backend.repositories.event_repo import EventRepository
 from backend.repositories.worker_repo import WorkerRepository
+from backend.config.settings import get_settings
 from backend.events.correlation import generate_id
 from backend.events.logger import get_logger
 
@@ -34,10 +35,11 @@ class Worker:
         task_repo: TaskRepository,
         event_repo: EventRepository,
         session: Optional[BrowserSessionInstance] = None,
-        heartbeat_interval: int = 15,
-        stale_timeout: int = 60,
+        heartbeat_interval: Optional[int] = None,
+        stale_timeout: Optional[int] = None,
         worker_repo: Optional[WorkerRepository] = None,
     ):
+        settings = get_settings()
         self.worker_id = worker_id
         self.worker_code = worker_code
         self.mode = mode
@@ -45,8 +47,8 @@ class Worker:
         self.task_repo = task_repo
         self.event_repo = event_repo
         self.session = session
-        self.heartbeat_interval = heartbeat_interval
-        self.stale_timeout = stale_timeout
+        self.heartbeat_interval = heartbeat_interval if heartbeat_interval is not None else settings.worker_heartbeat_interval
+        self.stale_timeout = stale_timeout if stale_timeout is not None else settings.worker_stale_timeout
         self.worker_repo = worker_repo
         self.current_task_id: Optional[str] = None
         self.last_heartbeat: str = utc_now_iso()

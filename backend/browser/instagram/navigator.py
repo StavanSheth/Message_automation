@@ -178,14 +178,26 @@ class InstagramNavigator:
                     return { status: 'RESTRICTED', reason: 'profile_restricted' };
                 }
 
-                // 4. Check for profile page elements (header, main container, username heading)
-                const hasProfileHeader = !!document.querySelector('header') || !!document.querySelector('section main');
-                const hasH2 = !!document.querySelector('h2');
-                if (hasProfileHeader || hasH2) {
-                    return { status: 'AVAILABLE', reason: 'profile_elements_present' };
+                // 4. Specific Instagram profile signals (strong identity verification)
+                const hasCanonicalProfile = !!document.querySelector('link[rel="canonical"][href*="instagram.com/"]');
+                const hasOgProfile = !!document.querySelector('meta[property="og:type"][content="profile"]') ||
+                                     !!document.querySelector('meta[property="og:url"][content*="instagram.com/"]');
+                const hasProfileHeader = !!document.querySelector('header section') || !!document.querySelector('header [role="img"]');
+                const hasProfileButtons = !!document.querySelector('header button') || !!document.querySelector('header [role="button"]');
+                const hasUsernameHeader = !!document.querySelector('header h2, section h2');
+                const hasMetricList = !!document.querySelector('header ul li');
+
+                if (hasCanonicalProfile || hasOgProfile || (hasProfileHeader && (hasProfileButtons || hasUsernameHeader || hasMetricList))) {
+                    return { status: 'AVAILABLE', reason: 'instagram_profile_detected' };
                 }
 
-                return { status: 'AVAILABLE', reason: 'default' };
+                // 5. Fallback for lightweight / mobile web structures
+                const hasMain = !!document.querySelector('section main, main[role="main"]');
+                if (hasMain && (hasUsernameHeader || document.querySelector('header'))) {
+                    return { status: 'AVAILABLE', reason: 'profile_elements_fallback' };
+                }
+
+                return { status: 'AVAILABLE', reason: 'default_available' };
             }"""
         )
 

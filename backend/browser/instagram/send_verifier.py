@@ -45,10 +45,17 @@ class InstagramSendVerifier:
 
         result = session.evaluate(
             """(expectedText) => {
-                // Find message bubble elements in active chat thread
-                const messageNodes = Array.from(document.querySelectorAll(
-                    'div[role="row"] div[dir="auto"], div[data-testid="message-container"], div.x1n2onr6'
-                ));
+                // Search specifically inside direct message thread container
+                const threadContainer = document.querySelector(
+                    'div[role="grid"], div[aria-label*="Messages" i], div[data-testid="message-container"], main div[tabindex="0"], div.x78zum5.xdt5ytf'
+                ) || document;
+
+                const messageNodes = Array.from(threadContainer.querySelectorAll(
+                    'div[role="row"] div[dir="auto"], div[data-testid="message-container"] div[dir="auto"], div[style*="background-color"] div[dir="auto"], div[dir="auto"]'
+                )).filter(node => {
+                    // Exclude message composer input, search fields, or bio elements
+                    return !node.closest('textarea, [contenteditable="true"], input, header, form');
+                });
 
                 const cleanedExpected = expectedText.trim().toLowerCase();
                 let foundMatch = false;
@@ -61,15 +68,6 @@ class InstagramSendVerifier:
                         foundMatch = true;
                         matchedSnippet = text.substring(0, 100);
                         break;
-                    }
-                }
-
-                // Also check if entire page body contains the text in message context
-                if (!foundMatch) {
-                    const bodyText = document.body ? document.body.innerText : '';
-                    if (bodyText.includes(expectedText.trim())) {
-                        foundMatch = true;
-                        matchedSnippet = expectedText.trim().substring(0, 100);
                     }
                 }
 

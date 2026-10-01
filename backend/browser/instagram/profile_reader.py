@@ -119,14 +119,49 @@ class InstagramProfileReader:
                     result.is_private = true;
                 }
 
-                // 6. Direct Message capability (check for Message button)
-                const buttons = Array.from(document.querySelectorAll('header button, header div[role="button"]'));
+                // 6. Direct Message capability (check for Message button / DM action)
+                const buttons = Array.from(document.querySelectorAll('header button, header div[role="button"], main button'));
                 for (const btn of buttons) {
                     const btnText = (btn.innerText || '').toLowerCase().trim();
                     if (btnText === 'message' || btnText.includes('message')) {
                         result.can_message = true;
                         break;
                     }
+                }
+
+                // 7. Resilient Fallback: OpenGraph and Meta tags
+                const ogTitle = document.querySelector('meta[property="og:title"]')?.getAttribute('content') || '';
+                const ogDesc = document.querySelector('meta[property="og:description"]')?.getAttribute('content') || '';
+                const ogUrl = document.querySelector('meta[property="og:url"]')?.getAttribute('content') || '';
+
+                if (ogUrl) result.url = ogUrl;
+
+                // Extract username from og:title if not found in DOM
+                if (!result.username && ogTitle) {
+                    const match = ogTitle.match(/\\(@([^)]+)\\)/);
+                    if (match) {
+                        result.username = match[1].trim();
+                    } else if (ogTitle.includes('• Instagram')) {
+                        result.username = ogTitle.split('•')[0].replace('@', '').trim();
+                    }
+                }
+
+                // Extract display name from og:title if not found in DOM
+                if (!result.display_name && ogTitle) {
+                    const nameMatch = ogTitle.match(/^([^(@]+)\\s*\\(@/);
+                    if (nameMatch) {
+                        result.display_name = nameMatch[1].trim();
+                    }
+                }
+
+                // Extract metrics from og:description if DOM extraction was empty
+                if (!result.follower_count_text && ogDesc) {
+                    const fMatch = ogDesc.match(/([\\d.,]+[KkMmBb]?)\\s*Followers/i);
+                    if (fMatch) result.follower_count_text = fMatch[1];
+                    const fgMatch = ogDesc.match(/([\\d.,]+[KkMmBb]?)\\s*Following/i);
+                    if (fgMatch) result.following_count_text = fgMatch[1];
+                    const pMatch = ogDesc.match(/([\\d.,]+[KkMmBb]?)\\s*Posts/i);
+                    if (pMatch) result.post_count_text = pMatch[1];
                 }
 
                 return result;
