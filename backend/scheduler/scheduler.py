@@ -10,7 +10,6 @@ from backend.repositories.followup_repo import FollowupRepository
 from backend.repositories.contact_repo import ContactRepository
 from backend.scheduler.task_dispatcher import TaskDispatcher
 from backend.scheduler.retry_scheduler import RetryScheduler
-from backend.application.followup_service import FollowupService
 from backend.repositories.message_repo import MessageRepository
 from backend.events.correlation import generate_id
 from backend.events.logger import get_logger
@@ -40,7 +39,7 @@ class Scheduler:
         poll_interval: float = 1.0,
         task_dispatcher: Optional[TaskDispatcher] = None,
         retry_scheduler: Optional[RetryScheduler] = None,
-        followup_service: Optional[FollowupService] = None,
+        followup_service: Optional[Any] = None,
         message_repo: Optional[MessageRepository] = None,
     ):
         self.task_repo = task_repo
@@ -53,12 +52,16 @@ class Scheduler:
 
         self.task_dispatcher = task_dispatcher or TaskDispatcher(task_repo, worker_manager)
         self.retry_scheduler = retry_scheduler or RetryScheduler(task_repo)
-        self.followup_service = followup_service or FollowupService(
-            followup_repo=self.followup_repo,
-            task_repo=self.task_repo,
-            contact_repo=self.contact_repo,
-            message_repo=self.message_repo,
-        )
+        if followup_service is not None:
+            self.followup_service = followup_service
+        else:
+            from backend.application.followup_service import FollowupService
+            self.followup_service = FollowupService(
+                followup_repo=self.followup_repo,
+                task_repo=self.task_repo,
+                contact_repo=self.contact_repo,
+                message_repo=self.message_repo,
+            )
 
         self.is_paused: bool = False
         self.is_running: bool = False

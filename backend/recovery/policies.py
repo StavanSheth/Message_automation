@@ -24,7 +24,7 @@ class TaskRecoveryPolicy:
         if current_state in (TaskState.SENDING, TaskState.VERIFYING):
             return TaskState.RECONCILING
 
-        if current_state == TaskState.RECONCILING:
-            return TaskState.RECONCILING
+        if current_state in (TaskState.RECONCILING, TaskState.INTERRUPTED):
+            return current_state
 
         return TaskState.MANUAL_REVIEW

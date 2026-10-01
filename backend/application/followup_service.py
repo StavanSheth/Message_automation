@@ -206,8 +206,17 @@ class FollowupService:
         return created_tasks
 
     def cancel_pending_followups(self, contact_id: str, reason: str = "REPLIED") -> int:
-        """Cancel all pending or scheduled follow-ups for a contact upon reply or manual action."""
+        """Cancel all pending or scheduled follow-ups and unexecuted tasks for a contact upon reply or manual action."""
         count = self.followup_repo.cancel_pending_for_contact(contact_id, cancel_reason=reason)
+        # Also cancel unexecuted follow-up tasks (READY or QUEUED) for this contact
+        tasks = self.task_repo.get_by_contact_id(contact_id)
+        for t in tasks:
+            if t.type in (TaskType.FOLLOW_UP_1, TaskType.FOLLOW_UP_2) and t.status in (TaskState.READY, TaskState.QUEUED):
+                try:
+                    self.task_repo.update_state(t.id, TaskState.CANCELLED, enforce_transition=False)
+                except Exception as e:
+                    logger.warning(f"Could not cancel task {t.id} on reply: {e}")
+
         if count > 0 and self.event_repo:
             self.event_repo.record(
                 event_code=EventCode.FOLLOWUP_CANCELLED,

@@ -82,6 +82,8 @@ class MockBrowserDriver(BrowserDriver):
             return "hello"
         if "a + b" in expression and isinstance(arg, (list, tuple)) and len(arg) == 2:
             return arg[0] + arg[1]
+        if "AUTHENTICATED" in expression or "loginForm" in expression or "direct/inbox" in expression:
+            return {"state": "AUTHENTICATED", "reason": "mock_authenticated"}
         # Default: return empty dict for object queries, True for boolean queries
         if "return" in expression and "true" in expression.lower():
             return True

@@ -77,7 +77,7 @@ def test_execution_service_deduplicates_concurrent_identical_task():
 
     # Compute key
     exec_key = service._compute_execution_key(task)
-    assert len(exec_key) == 16
+    assert len(exec_key) == 32
 
     # Simulate in-flight execution by manually adding to active set
     service._active_execution_keys.add(exec_key)

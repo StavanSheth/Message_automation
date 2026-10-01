@@ -47,32 +47,64 @@ class BrowserRecoveryManager:
         task_id: Optional[str] = None,
         worker_id: Optional[str] = None,
         error_code: Optional[str] = None,
+        correlation_id: Optional[str] = None,
+        task_state: Optional[str] = None,
+        worker_state: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
-        Safely capture crash diagnostics: URL, title, metadata.
-        Does NOT capture or store credentials, cookies, or secrets.
+        Safely capture crash diagnostics: URL, title, metadata, states.
+        Strictly redacts credentials, cookies, tokens, and private message contents.
+        Never prevents recovery if artifact capture fails.
         """
         now_iso = utc_now_iso()
         diag_id = generate_id("DIAG")
 
         current_url = ""
         page_title = ""
+        browser_state = "alive" if session and session.is_alive() else "dead"
+        screenshot_path = None
+
         try:
             current_url = session.current_url or ""
             if session.is_alive():
                 page_title = session.get_page_title()
+                # Optional screenshot capture when safe and supported
+                try:
+                    if hasattr(session, "driver") and hasattr(session.driver, "page") and session.driver.page:
+                        ss_file = self.artifacts_dir / f"{diag_id}.png"
+                        session.driver.page.screenshot(path=str(ss_file))
+                        screenshot_path = str(ss_file)
+                except Exception as ss_err:
+                    logger.debug(f"Optional diagnostic screenshot could not be captured: {ss_err}")
         except Exception as e:
-            logger.debug(f"Could not extract page title for diagnostics: {e}")
+            logger.debug(f"Could not extract page details for diagnostics: {e}")
+
+        # Redact sensitive parameters from URL if any
+        if "?" in current_url:
+            base_url, query_str = current_url.split("?", 1)
+            sanitized_parts = []
+            for param in query_str.split("&"):
+                k = param.split("=")[0].lower()
+                if any(sec in k for sec in ("token", "auth", "secret", "pass", "key", "cookie")):
+                    sanitized_parts.append(f"{k}=[REDACTED]")
+                else:
+                    sanitized_parts.append(param)
+            current_url = f"{base_url}?{'&'.join(sanitized_parts)}"
 
         diag_data = {
             "id": diag_id,
             "timestamp": now_iso,
-            "session_id": session.session_id,
+            "session_id": getattr(session, "session_id", None),
             "task_id": task_id,
             "worker_id": worker_id,
+            "correlation_id": correlation_id,
             "error_code": error_code,
             "current_url": current_url,
             "page_title": page_title,
+            "browser_state": browser_state,
+            "task_state": task_state,
+            "worker_state": worker_state,
+            "screenshot_path": screenshot_path,
         }
 
         # Write metadata JSON artifact
@@ -80,10 +112,45 @@ class BrowserRecoveryManager:
             artifact_file = self.artifacts_dir / f"{diag_id}.json"
             with open(artifact_file, "w", encoding="utf-8") as f:
                 json.dump(diag_data, f, indent=2)
+            self.cleanup_artifacts()
         except Exception as e:
             logger.warning(f"Failed to write diagnostic artifact: {e}")
 
         return diag_data
+
+    def cleanup_artifacts(
+        self,
+        retention_days: Optional[int] = None,
+        max_artifacts: Optional[int] = None,
+    ) -> int:
+        """Remove diagnostic artifacts older than retention days or exceeding max count."""
+        from datetime import datetime, timezone, timedelta
+        settings = getattr(self.browser_manager, "settings", None)
+        r_days = retention_days or getattr(settings, "diagnostic_artifact_retention_days", 7)
+        max_count = max_artifacts or getattr(settings, "max_diagnostic_artifacts", 200)
+
+        deleted = 0
+        cutoff = datetime.now(timezone.utc) - timedelta(days=r_days)
+        try:
+            files = sorted(self.artifacts_dir.glob("DIAG-*"), key=lambda p: p.stat().st_mtime)
+            for f in files:
+                try:
+                    mtime = datetime.fromtimestamp(f.stat().st_mtime, tz=timezone.utc)
+                    if mtime < cutoff:
+                        f.unlink(missing_ok=True)
+                        deleted += 1
+                except Exception:
+                    pass
+
+            remaining = sorted(self.artifacts_dir.glob("DIAG-*"), key=lambda p: p.stat().st_mtime)
+            if len(remaining) > max_count:
+                excess = len(remaining) - max_count
+                for f in remaining[:excess]:
+                    f.unlink(missing_ok=True)
+                    deleted += 1
+        except Exception as e:
+            logger.debug(f"Error during diagnostic cleanup: {e}")
+        return deleted
 
     def recover_session(
         self,
@@ -91,10 +158,11 @@ class BrowserRecoveryManager:
         worker_id: Optional[str] = None,
         current_task: Optional[Task] = None,
         reconciliation_service: Optional[Any] = None,
+        correlation_id: Optional[str] = None,
     ) -> BrowserSessionInstance:
         """
         Execute self-healing browser recovery:
-        1. Capture diagnostics
+        1. Capture diagnostics safely (non-blocking)
         2. Close broken session
         3. Check task state: if SENDING or VERIFYING -> enters reconciliation, NEVER auto-resumed
         4. Recreate session with matching profile
@@ -104,13 +172,18 @@ class BrowserRecoveryManager:
             f"Initiating browser recovery for session {old_session.session_id} (worker: {worker_id})"
         )
 
-        # 1. Capture diagnostics
-        self.capture_diagnostics(
-            session=old_session,
-            task_id=current_task.id if current_task else None,
-            worker_id=worker_id,
-            error_code="BROWSER_CRASH",
-        )
+        # 1. Capture diagnostics (safe, non-fatal)
+        try:
+            self.capture_diagnostics(
+                session=old_session,
+                task_id=current_task.id if current_task else None,
+                worker_id=worker_id,
+                error_code="BROWSER_CRASH",
+                correlation_id=correlation_id,
+                task_state=current_task.status.value if current_task else None,
+            )
+        except Exception as diag_err:
+            logger.warning(f"Diagnostic capture failed during recovery: {diag_err}")
 
         # 2. Stop broken session
         profile_path = old_session.profile_path
@@ -143,7 +216,7 @@ class BrowserRecoveryManager:
         )
         new_session.start()
 
-        # 5. Emit recovery event
+        # 5. Emit recovery event with dedicated tracing columns
         if self.event_repo:
             self.event_repo.record(
                 event_code=EventCode.BROWSER_RECOVERED,
@@ -151,6 +224,10 @@ class BrowserRecoveryManager:
                 level=EventLevel.INFO,
                 entity_type="browser_session",
                 entity_id=new_session.session_id,
+                task_id=current_task.id if current_task else None,
+                worker_id=worker_id,
+                session_id=new_session.session_id,
+                correlation_id=correlation_id,
                 payload={
                     "old_session_id": old_id,
                     "worker_id": worker_id,

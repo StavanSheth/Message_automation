@@ -62,10 +62,17 @@ class TaskRecoveryHandler:
         return target
 
     def recover_expired_leases(self) -> int:
-        """Scan and recover tasks whose lease has expired."""
+        """Scan and recover tasks whose lease has expired according to state policy."""
         expired = self.task_repo.recover_expired_leases()
-        recovered_count = 0
         for task in expired:
-            self.recover_task(task, reason="lease_expired")
-            recovered_count += 1
-        return recovered_count
+            if self.event_repo:
+                self.event_repo.record(
+                    event_code=EventCode.LEASE_EXPIRED,
+                    category="recovery",
+                    level=EventLevel.WARNING,
+                    entity_type="task",
+                    entity_id=task.id,
+                    task_id=task.id,
+                    payload={"status": task.status.value, "reason": "lease_expired"},
+                )
+        return len(expired)

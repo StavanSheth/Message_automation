@@ -35,10 +35,14 @@ class AppSettings:
     spreadsheet_navigation_timeout: int = 30
     spreadsheet_operation_timeout: int = 30
     lease_timeout: int = 120
+    lease_renew_interval: int = 30
     reconciliation_timeout: int = 300
     diagnostic_artifact_retention_days: int = 7
+    diagnostics_directory: str = "data/artifacts/diagnostics"
+    max_diagnostic_artifacts: int = 200
     max_reconciliation_attempts: int = 3
     rate_limit_cooldown: int = 900
+    rate_limit_cooldown_seconds: int = 900
     browser_recovery_attempts: int = 3
     session_validation_timeout: int = 15
     manual_review_timeout: int = 86400
@@ -98,6 +102,10 @@ class AppSettings:
             raise ValidationError(f"browser_recovery_attempts must be positive, got {self.browser_recovery_attempts}")
         if self.session_validation_timeout <= 0:
             raise ValidationError(f"session_validation_timeout must be positive, got {self.session_validation_timeout}")
+        if self.lease_renew_interval <= 0:
+            raise ValidationError(f"lease_renew_interval must be positive, got {self.lease_renew_interval}")
+        if self.max_diagnostic_artifacts <= 0:
+            raise ValidationError(f"max_diagnostic_artifacts must be positive, got {self.max_diagnostic_artifacts}")
         if self.manual_review_timeout <= 0:
             raise ValidationError(f"manual_review_timeout must be positive, got {self.manual_review_timeout}")
 

@@ -23,6 +23,10 @@ class EventRepository(BaseRepository):
         payload: Optional[Dict[str, Any]] = None,
         event_id: Optional[str] = None,
         timestamp: Optional[str] = None,
+        task_id: Optional[str] = None,
+        worker_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        correlation_id: Optional[str] = None,
     ) -> Event:
         """Append an event to the persistent event log and notify subscribers."""
         if event_id is None:
@@ -30,14 +34,24 @@ class EventRepository(BaseRepository):
         if timestamp is None:
             timestamp = utc_now_iso()
 
+        if payload is not None:
+            task_id = task_id or payload.get("task_id")
+            worker_id = worker_id or payload.get("worker_id")
+            session_id = session_id or payload.get("session_id")
+            correlation_id = correlation_id or payload.get("correlation_id")
+
+        if task_id is None and entity_type == "task":
+            task_id = entity_id
+
         payload_json = json.dumps(payload) if payload is not None else None
         level_val = level.value if isinstance(level, EventLevel) else level
         code_val = event_code.value if isinstance(event_code, EventCode) else event_code
 
         query = """
             INSERT INTO events (
-                id, timestamp, level, category, entity_type, entity_id, event_code, payload_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+                id, timestamp, level, category, entity_type, entity_id,
+                event_code, payload_json, task_id, worker_id, session_id, correlation_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         """
         params = (
             event_id,
@@ -48,6 +62,10 @@ class EventRepository(BaseRepository):
             entity_id,
             code_val,
             payload_json,
+            task_id,
+            worker_id,
+            session_id,
+            correlation_id,
         )
         with self.db.transaction() as conn:
             conn.execute(query, params)
@@ -61,6 +79,10 @@ class EventRepository(BaseRepository):
             entity_id=entity_id,
             event_code=EventCode(code_val),
             payload_json=payload_json,
+            task_id=task_id,
+            worker_id=worker_id,
+            session_id=session_id,
+            correlation_id=correlation_id,
         )
 
         # Notify event bus
@@ -73,6 +95,10 @@ class EventRepository(BaseRepository):
         entity_id: Optional[str] = None,
         category: Optional[str] = None,
         level: Optional[EventLevel] = None,
+        task_id: Optional[str] = None,
+        worker_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        correlation_id: Optional[str] = None,
         limit: int = 100,
         offset: int = 0,
     ) -> List[Event]:
@@ -93,6 +119,18 @@ class EventRepository(BaseRepository):
         if level:
             clauses.append("level = ?")
             params.append(level.value if isinstance(level, EventLevel) else level)
+        if task_id:
+            clauses.append("task_id = ?")
+            params.append(task_id)
+        if worker_id:
+            clauses.append("worker_id = ?")
+            params.append(worker_id)
+        if session_id:
+            clauses.append("session_id = ?")
+            params.append(session_id)
+        if correlation_id:
+            clauses.append("correlation_id = ?")
+            params.append(correlation_id)
 
         where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         query = f"SELECT * FROM events {where_sql} ORDER BY timestamp DESC LIMIT ? OFFSET ?;"
@@ -102,6 +140,7 @@ class EventRepository(BaseRepository):
         return [self._row_to_event(row) for row in cursor.fetchall()]
 
     def _row_to_event(self, row: sqlite3.Row) -> Event:
+        keys = row.keys()
         return Event(
             id=row["id"],
             timestamp=row["timestamp"],
@@ -111,4 +150,9 @@ class EventRepository(BaseRepository):
             entity_id=row["entity_id"],
             event_code=EventCode(row["event_code"]),
             payload_json=row["payload_json"],
+            task_id=row["task_id"] if "task_id" in keys else None,
+            worker_id=row["worker_id"] if "worker_id" in keys else None,
+            session_id=row["session_id"] if "session_id" in keys else None,
+            correlation_id=row["correlation_id"] if "correlation_id" in keys else None,
         )
+

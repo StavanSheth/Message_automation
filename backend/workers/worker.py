@@ -55,6 +55,7 @@ class Worker:
         self.last_heartbeat: str = utc_now_iso()
         self._lock_token: Optional[str] = None
         self._lease_id: Optional[str] = None
+        self._lease_lost: bool = False
 
         self._lock = threading.Lock()
         self._heartbeat_thread: Optional[threading.Thread] = None
@@ -211,6 +212,7 @@ class Worker:
                 self.current_task_id = task_id
                 self._lock_token = lock_token
                 self._lease_id = lease_id
+                self._lease_lost = False
                 self.status = WorkerStatus.BUSY
                 self.last_heartbeat = utc_now_iso()
             self._persist_state()
@@ -220,9 +222,47 @@ class Worker:
                 level=EventLevel.INFO,
                 entity_type="task",
                 entity_id=task_id,
+                task_id=task_id,
+                worker_id=self.worker_id,
                 payload={"worker_id": self.worker_id, "lock_token": lock_token, "lease_id": lease_id},
             )
         return claimed
+
+    def renew_current_lease(self, duration_seconds: Optional[int] = None) -> bool:
+        """
+        Renew lease for current task.
+        If renewal fails (e.g. lease expired or reclaimed), marks lease as lost and returns False.
+        """
+        with self._lock:
+            tid = self.current_task_id
+            lid = self._lease_id or self._lock_token
+            if not tid or not lid:
+                return False
+
+        duration = duration_seconds or getattr(self.settings, "lease_timeout", 120)
+        renewed = self.task_repo.renew_lease(
+            task_id=tid,
+            lease_id=lid,
+            worker_id=self.worker_id,
+            lease_duration_seconds=duration,
+        )
+        if not renewed:
+            logger.warning(f"Worker {self.worker_id} failed to renew lease for task {tid}. Lease lost!")
+            with self._lock:
+                self._lease_lost = True
+            return False
+        return True
+
+    def is_lease_active(self) -> bool:
+        """Check if worker still holds an active, unexpired lease for the current task."""
+        with self._lock:
+            if self._lease_lost or not self.current_task_id:
+                return False
+            tid = self.current_task_id
+            lid = self._lease_id or self._lock_token
+        if not lid:
+            return False
+        return self.task_repo.is_lease_valid(tid, lid, self.worker_id)
 
     def release_current_task(self) -> None:
         """Release the currently held task and lease and return to IDLE."""

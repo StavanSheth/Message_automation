@@ -65,6 +65,7 @@ class InstagramAutomationService:
         auth_validator: Optional[InstagramAuthValidator] = None,
         reconciliation_service: Optional[Any] = None,
         followup_service: Optional[Any] = None,
+        cooldown_repo: Optional[Any] = None,
     ):
         self.task_repo = task_repo
         self.contact_repo = contact_repo
@@ -74,6 +75,11 @@ class InstagramAutomationService:
         self.error_repo = error_repo
         self.verification_repo = verification_repo
         self.settings = settings or get_settings()
+
+        from backend.repositories.cooldown_repo import CooldownRepository
+        self.cooldown_repo = cooldown_repo or (
+            CooldownRepository(self.task_repo.db) if hasattr(self.task_repo, "db") else None
+        )
 
         self.navigator = navigator or InstagramNavigator()
         self.reader = reader or InstagramProfileReader()
@@ -88,7 +94,39 @@ class InstagramAutomationService:
         self.reconciliation_service = reconciliation_service
         self.followup_service = followup_service
         self._rate_limit_cooldown_until: Optional[datetime] = None
-        self._rate_limit_cooldown_seconds: int = 300  # 5-minute cooldown on rate limit detection
+        self._rate_limit_cooldown_seconds: int = getattr(
+            self.settings, "rate_limit_cooldown_seconds", getattr(self.settings, "rate_limit_cooldown", 900)
+        )
+
+    def _activate_cooldown(
+        self,
+        reason: str,
+        error_code: ErrorCode,
+        worker_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+    ) -> None:
+        """Activate both in-memory and persistent cross-process rate-limit cooldown."""
+        duration = self._rate_limit_cooldown_seconds
+        expires_dt = datetime.now(timezone.utc) + timedelta(seconds=duration)
+        self._rate_limit_cooldown_until = expires_dt
+        logger.warning(f"Rate-limit cooldown activated for {duration}s: {reason}")
+
+        if self.cooldown_repo:
+            try:
+                from backend.domain.models import RateLimitCooldown
+                cool_rec = RateLimitCooldown(
+                    id=generate_id("COOL"),
+                    scope="GLOBAL",
+                    reason=reason,
+                    error_code=error_code.value,
+                    detected_at=utc_now_iso(),
+                    cooldown_until=expires_dt.isoformat(),
+                    detected_by_worker=worker_id,
+                    detected_by_session=session_id,
+                )
+                self.cooldown_repo.record_cooldown(cool_rec)
+            except Exception as e:
+                logger.debug(f"Could not record persistent cooldown: {e}")
 
     def execute_messaging_task(
         self,
@@ -150,10 +188,21 @@ class InstagramAutomationService:
             logger.warning(f"Could not transition task to VALIDATING: {e}")
 
         # ── 2a. Rate-Limit Cooldown Check ────────────────────────
+        active_cooldown_reason = None
         if self._rate_limit_cooldown_until and datetime.now(timezone.utc) < self._rate_limit_cooldown_until:
-            remaining = (self._rate_limit_cooldown_until - datetime.now(timezone.utc)).total_seconds()
-            logger.warning(f"Rate-limit cooldown active ({remaining:.0f}s remaining); deferring task {current_task.id}")
-            self._record_error(current_task, ErrorCode.RATE_LIMITED, f"Rate-limit cooldown active ({remaining:.0f}s remaining)", retryable=True, worker_id=worker_id)
+            rem = (self._rate_limit_cooldown_until - datetime.now(timezone.utc)).total_seconds()
+            active_cooldown_reason = f"Rate-limit cooldown active ({rem:.0f}s remaining)"
+        elif self.cooldown_repo:
+            try:
+                db_cool = self.cooldown_repo.get_active_cooldown(scope="GLOBAL")
+                if db_cool:
+                    active_cooldown_reason = f"Persistent {db_cool.scope} cooldown active: {db_cool.reason}"
+            except Exception as e:
+                logger.debug(f"Could not check persistent cooldown: {e}")
+
+        if active_cooldown_reason:
+            logger.warning(f"Rate-limit cooldown active; deferring task {current_task.id}: {active_cooldown_reason}")
+            self._record_error(current_task, ErrorCode.RATE_LIMITED, active_cooldown_reason, retryable=True, worker_id=worker_id)
             self.task_repo.update_state(current_task.id, TaskState.RETRY_WAIT, worker_id=worker_id, enforce_transition=False)
             return False
 
@@ -163,7 +212,7 @@ class InstagramAutomationService:
             self.task_repo.update_state(current_task.id, TaskState.RETRY_WAIT, worker_id=worker_id)
             return False
 
-        # ── 2c. Authentication Validation ────────────────────────
+        # ── 2c. Authentication Validation (Fail-Closed) ──────────
         try:
             from backend.domain.enums import SessionAuthState
             auth_state, auth_reason = self.auth_validator.check_auth_state(session)
@@ -175,10 +224,14 @@ class InstagramAutomationService:
                     level=EventLevel.CRITICAL,
                     entity_type="task",
                     entity_id=current_task.id,
+                    task_id=current_task.id,
+                    worker_id=worker_id,
+                    correlation_id=corr_id,
                     payload={"worker_id": worker_id, "auth_reason": auth_reason, "correlation_id": corr_id},
                 )
-                self.task_repo.update_state(current_task.id, TaskState.MANUAL_REVIEW, worker_id=worker_id)
+                self.task_repo.update_state(current_task.id, TaskState.MANUAL_REVIEW, worker_id=worker_id, enforce_transition=False)
                 return False
+
             if auth_state in (SessionAuthState.CHALLENGE, SessionAuthState.CHECKPOINT):
                 self._record_error(current_task, ErrorCode.CHALLENGE_REQUIRED, f"Instagram challenge/checkpoint: {auth_reason}", retryable=False, worker_id=worker_id)
                 self.event_repo.record(
@@ -187,12 +240,30 @@ class InstagramAutomationService:
                     level=EventLevel.CRITICAL,
                     entity_type="task",
                     entity_id=current_task.id,
+                    task_id=current_task.id,
+                    worker_id=worker_id,
+                    correlation_id=corr_id,
                     payload={"worker_id": worker_id, "auth_reason": auth_reason, "auth_state": auth_state.value, "correlation_id": corr_id},
                 )
-                self.task_repo.update_state(current_task.id, TaskState.MANUAL_REVIEW, worker_id=worker_id)
+                self.task_repo.update_state(current_task.id, TaskState.MANUAL_REVIEW, worker_id=worker_id, enforce_transition=False)
                 return False
+
+            if auth_state == SessionAuthState.SESSION_EXPIRED:
+                self._record_error(current_task, ErrorCode.SESSION_EXPIRED, f"Session expired: {auth_reason}", retryable=False, worker_id=worker_id)
+                self.task_repo.update_state(current_task.id, TaskState.MANUAL_REVIEW, worker_id=worker_id, enforce_transition=False)
+                return False
+
+            if auth_state != SessionAuthState.AUTHENTICATED:
+                # Any non-authenticated state (including UNKNOWN) must FAIL-CLOSED
+                self._record_error(current_task, ErrorCode.SESSION_EXPIRED, f"Instagram authentication unconfirmed ({auth_state.value}): {auth_reason}", retryable=False, worker_id=worker_id)
+                self.task_repo.update_state(current_task.id, TaskState.MANUAL_REVIEW, worker_id=worker_id, enforce_transition=False)
+                return False
+
         except Exception as e:
-            logger.warning(f"Auth validation check failed (proceeding cautiously): {e}")
+            logger.error(f"Auth validation exception (failing closed to MANUAL_REVIEW): {e}", exc_info=True)
+            self._record_error(current_task, ErrorCode.SESSION_EXPIRED, f"Auth validation failure: {e}", retryable=False, worker_id=worker_id)
+            self.task_repo.update_state(current_task.id, TaskState.MANUAL_REVIEW, worker_id=worker_id, enforce_transition=False)
+            return False
 
         # ── 3. Profile Navigation ────────────────────────────────
         nav_result = self.navigator.navigate_to_profile(session, contact.instagram_url)
@@ -204,6 +275,9 @@ class InstagramAutomationService:
             level=EventLevel.INFO,
             entity_type="task",
             entity_id=current_task.id,
+            task_id=current_task.id,
+            worker_id=worker_id,
+            correlation_id=corr_id,
             payload={"url": contact.instagram_url, "status": page_status, "correlation_id": corr_id},
         )
 
@@ -217,6 +291,9 @@ class InstagramAutomationService:
                 level=EventLevel.CRITICAL,
                 entity_type="task",
                 entity_id=current_task.id,
+                task_id=current_task.id,
+                worker_id=worker_id,
+                correlation_id=corr_id,
                 payload={"worker_id": worker_id, "url": nav_result.get("url"), "correlation_id": corr_id},
             )
             self.task_repo.update_state(current_task.id, TaskState.MANUAL_REVIEW, worker_id=worker_id)
@@ -230,8 +307,12 @@ class InstagramAutomationService:
             return False
 
         if page_status == InstagramPageStatus.ACCESS_BLOCKED:
-            self._rate_limit_cooldown_until = datetime.now(timezone.utc) + timedelta(seconds=self._rate_limit_cooldown_seconds)
-            logger.warning(f"Rate-limit cooldown activated for {self._rate_limit_cooldown_seconds}s due to ACCESS_BLOCKED")
+            self._activate_cooldown(
+                reason="Instagram profile navigation ACCESS_BLOCKED",
+                error_code=ErrorCode.ACTION_BLOCKED,
+                worker_id=worker_id,
+                session_id=getattr(session, "session_id", None),
+            )
             self._record_error(
                 current_task, ErrorCode.ACTION_BLOCKED, "Instagram access blocked or rate limited", retryable=False, worker_id=worker_id
             )
@@ -281,6 +362,9 @@ class InstagramAutomationService:
             level=EventLevel.INFO,
             entity_type="task",
             entity_id=current_task.id,
+            task_id=current_task.id,
+            worker_id=worker_id,
+            correlation_id=corr_id,
             payload={"decision": decision.value, "confidence": confidence, "correlation_id": corr_id},
         )
 
@@ -342,6 +426,9 @@ class InstagramAutomationService:
             level=EventLevel.INFO,
             entity_type="message",
             entity_id=message_record.id,
+            task_id=current_task.id,
+            worker_id=worker_id,
+            correlation_id=corr_id,
             payload={"task_id": current_task.id, "correlation_id": corr_id},
         )
 
@@ -354,6 +441,9 @@ class InstagramAutomationService:
             level=EventLevel.INFO,
             entity_type="message",
             entity_id=message_record.id,
+            task_id=current_task.id,
+            worker_id=worker_id,
+            correlation_id=corr_id,
             payload={"task_id": current_task.id, "contact_id": contact.id, "correlation_id": corr_id},
         )
 
@@ -362,12 +452,17 @@ class InstagramAutomationService:
             err_code = send_res.get("error_code") or ErrorCode.MESSAGE_SEND_FAILED
             is_ambiguous = send_res.get("is_ambiguous", False) or err_code == ErrorCode.UNKNOWN_RESULT
             if is_ambiguous and self.reconciliation_service:
+                self.task_repo.update_state(current_task.id, TaskState.RECONCILING, worker_id=worker_id, enforce_transition=False)
+                self.message_repo.update_status(message_record.id, MessageState.RECONCILIATION)
                 self.event_repo.record(
                     event_code=EventCode.MESSAGE_SEND_AMBIGUOUS,
                     category="messaging",
                     level=EventLevel.WARNING,
                     entity_type="message",
                     entity_id=message_record.id,
+                    task_id=current_task.id,
+                    worker_id=worker_id,
+                    correlation_id=corr_id,
                     payload={"task_id": current_task.id, "reason": send_res.get("reason"), "correlation_id": corr_id},
                 )
                 self.reconciliation_service.enter_reconciliation(
@@ -381,8 +476,12 @@ class InstagramAutomationService:
             else:
                 # Activate rate-limit cooldown if send was blocked
                 if err_code in (ErrorCode.ACTION_BLOCKED, ErrorCode.ACCESS_PROHIBITED, ErrorCode.RATE_LIMITED):
-                    self._rate_limit_cooldown_until = datetime.now(timezone.utc) + timedelta(seconds=self._rate_limit_cooldown_seconds)
-                    logger.warning(f"Rate-limit cooldown activated for {self._rate_limit_cooldown_seconds}s after send block")
+                    self._activate_cooldown(
+                        reason=f"Send action blocked: {send_res.get('reason', err_code.value)}",
+                        error_code=err_code,
+                        worker_id=worker_id,
+                        session_id=getattr(session, "session_id", None),
+                    )
                 self._record_error(
                     current_task, err_code, send_res.get("reason", "Send failed"), retryable=False, worker_id=worker_id
                 )
@@ -399,6 +498,9 @@ class InstagramAutomationService:
             level=EventLevel.INFO,
             entity_type="message",
             entity_id=message_record.id,
+            task_id=current_task.id,
+            worker_id=worker_id,
+            correlation_id=corr_id,
             payload={"task_id": current_task.id, "correlation_id": corr_id},
         )
 
@@ -420,6 +522,9 @@ class InstagramAutomationService:
                 level=EventLevel.INFO,
                 entity_type="message",
                 entity_id=message_record.id,
+                task_id=current_task.id,
+                worker_id=worker_id,
+                correlation_id=corr_id,
                 payload={"task_id": current_task.id, "contact_id": contact.id, "confirmed_at": now_sent, "correlation_id": corr_id},
             )
 
@@ -427,6 +532,8 @@ class InstagramAutomationService:
             self._schedule_next_followup(current_task, contact, now_sent)
             return True
         else:
+            self.task_repo.update_state(current_task.id, TaskState.RECONCILING, worker_id=worker_id, enforce_transition=False)
+            self.message_repo.update_status(message_record.id, MessageState.RECONCILIATION, result_code="AMBIGUOUS")
             if self.reconciliation_service:
                 self.reconciliation_service.enter_reconciliation(
                     task_id=current_task.id,
@@ -435,11 +542,6 @@ class InstagramAutomationService:
                     session_id=session.session_id if session else None,
                     reason=f"Send outcome unconfirmed: {verification_res.get('reason')}",
                 )
-            else:
-                msg_state = verification_res.get("message_state", MessageState.RECONCILIATION)
-                tsk_state = verification_res.get("task_state", TaskState.MANUAL_REVIEW)
-                self.message_repo.update_status(message_record.id, msg_state, result_code="AMBIGUOUS")
-                self.task_repo.update_state(current_task.id, tsk_state, worker_id=worker_id)
 
             self._record_error(
                 current_task,
@@ -453,9 +555,12 @@ class InstagramAutomationService:
     def _schedule_next_followup(self, task: Task, contact: Contact, sent_at_iso: str) -> None:
         """
         Schedule the next follow-up upon confirmation of prior message send:
-        - If task was MESSAGE (initial) -> schedule FOLLOW_UP_1
-        - If task was FOLLOW_UP_1 -> schedule FOLLOW_UP_2
+        Delegates to the authoritative FollowupService.
         """
+        if getattr(self, "followup_service", None) is not None:
+            self.followup_service.schedule_next_followup(task, contact, sent_at_iso)
+            return
+
         try:
             sent_dt = datetime.fromisoformat(sent_at_iso.replace("Z", "+00:00"))
         except Exception:

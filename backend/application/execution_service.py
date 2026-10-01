@@ -37,6 +37,7 @@ class ExecutionService:
         reconciliation_service: Optional[ReconciliationService] = None,
         manual_review_repo: Optional[ManualReviewRepository] = None,
         event_repo: Optional[EventRepository] = None,
+        execution_identity_repo: Optional[Any] = None,
     ):
         self.task_repo = task_repo
         self.message_repo = message_repo
@@ -45,6 +46,11 @@ class ExecutionService:
         self.manual_review_repo = manual_review_repo
         self.event_repo = event_repo
         self._active_execution_keys: Set[str] = set()
+
+        from backend.repositories.execution_identity_repo import ExecutionIdentityRepository
+        self.execution_identity_repo = execution_identity_repo or (
+            ExecutionIdentityRepository(self.task_repo.db) if hasattr(self.task_repo, "db") else None
+        )
 
     def execute_task(
         self,
@@ -60,17 +66,54 @@ class ExecutionService:
         corr_id = correlation_id or generate_id("CORR")
         now_iso = utc_now_iso()
 
-        task = self.task_repo.get_by_id(task_id)
+        actual_task_id = task_id.id if hasattr(task_id, "id") else str(task_id)
+        task = self.task_repo.get_by_id(actual_task_id)
         if not task:
-            logger.error(f"Cannot execute non-existent task {task_id}")
+            logger.error(f"Cannot execute non-existent task {actual_task_id}")
             return False
+        task_id = task.id
 
-        # ── 0. Deterministic Execution Identity ──────────────────
+        # ── 0. Deterministic Execution Identity & Deduplication ───
         exec_key = self._compute_execution_key(task)
         if exec_key in self._active_execution_keys:
             logger.warning(f"Duplicate in-flight execution for key {exec_key}; rejecting")
             return False
+
+        # Persistent DB check
+        if self.execution_identity_repo:
+            try:
+                existing = self.execution_identity_repo.get(exec_key)
+                if existing:
+                    if existing.state == "SENT":
+                        logger.info(f"Execution {exec_key} already confirmed SENT in DB; marking COMPLETED without resending")
+                        self.task_repo.update_state(task.id, TaskState.COMPLETED, worker_id=worker_id, enforce_transition=False)
+                        return True
+                    if existing.state == "RECONCILIATION":
+                        logger.warning(f"Execution {exec_key} is in RECONCILIATION in DB; aborting duplicate execution")
+                        self.task_repo.update_state(task.id, TaskState.MANUAL_REVIEW, worker_id=worker_id, enforce_transition=False)
+                        return False
+                    if existing.state == "RUNNING" and existing.worker_id and existing.worker_id != worker_id:
+                        logger.warning(f"Execution {exec_key} is currently RUNNING by worker {existing.worker_id}; rejecting concurrent attempt")
+                        return False
+            except Exception as e:
+                logger.debug(f"Could not check execution identity in DB: {e}")
+
         self._active_execution_keys.add(exec_key)
+        if self.execution_identity_repo:
+            try:
+                from backend.domain.models import ExecutionIdentity
+                new_identity = ExecutionIdentity(
+                    execution_key=exec_key,
+                    task_id=task.id,
+                    contact_id=task.contact_id,
+                    worker_id=worker_id,
+                    session_id=getattr(session, "session_id", None),
+                    correlation_id=corr_id,
+                    state="RUNNING",
+                )
+                self.execution_identity_repo.create(new_identity)
+            except Exception as e:
+                logger.debug(f"Could not record execution identity creation: {e}")
 
         try:
             # ── 1. Lease Validation ──────────────────────────────────
@@ -83,6 +126,9 @@ class ExecutionService:
                         level=EventLevel.WARNING,
                         entity_type="task",
                         entity_id=task_id,
+                        task_id=task_id,
+                        worker_id=worker_id,
+                        correlation_id=corr_id,
                         payload={"worker_id": worker_id, "lease_id": lease_id, "correlation_id": corr_id},
                     )
                 return False
@@ -91,11 +137,21 @@ class ExecutionService:
             if self.message_repo.has_confirmed_sent_message(task_id):
                 logger.info(f"Task {task_id} already has confirmed SENT message; marking COMPLETED")
                 self.task_repo.update_state(task.id, TaskState.COMPLETED, worker_id=worker_id, enforce_transition=False)
+                if self.execution_identity_repo:
+                    try:
+                        self.execution_identity_repo.update_state(exec_key, state="SENT", outcome="CONFIRMED_SENT")
+                    except Exception:
+                        pass
                 return True
 
             if self.message_repo.is_in_reconciliation(task_id):
                 logger.warning(f"Task {task_id} has unresolved message in RECONCILIATION; aborting duplicate execution")
                 self.task_repo.update_state(task.id, TaskState.MANUAL_REVIEW, worker_id=worker_id, enforce_transition=False)
+                if self.execution_identity_repo:
+                    try:
+                        self.execution_identity_repo.update_state(exec_key, state="RECONCILIATION", outcome="UNRESOLVED_RECONCILIATION")
+                    except Exception:
+                        pass
                 return False
 
             # ── 3. Lifecycle Start Event ─────────────────────────────
@@ -106,6 +162,9 @@ class ExecutionService:
                     level=EventLevel.INFO,
                     entity_type="task",
                     entity_id=task_id,
+                    task_id=task_id,
+                    worker_id=worker_id,
+                    correlation_id=corr_id,
                     payload={"worker_id": worker_id, "correlation_id": corr_id},
                 )
 
@@ -117,6 +176,18 @@ class ExecutionService:
                     worker_id=worker_id,
                     correlation_id=corr_id,
                 )
+                if success:
+                    if self.execution_identity_repo:
+                        try:
+                            self.execution_identity_repo.update_state(exec_key, state="SENT", outcome="CONFIRMED_SENT")
+                        except Exception:
+                            pass
+                else:
+                    if self.execution_identity_repo:
+                        try:
+                            self.execution_identity_repo.update_state(exec_key, state="FAILED", outcome="EXECUTION_FAILED")
+                        except Exception:
+                            pass
                 return success
             except Exception as e:
                 logger.error(f"Unexpected exception during execution of task {task_id}: {e}", exc_info=True)
@@ -128,8 +199,18 @@ class ExecutionService:
                         session_id=getattr(session, "session_id", None),
                         reason=f"Execution exception: {e}",
                     )
+                    if self.execution_identity_repo:
+                        try:
+                            self.execution_identity_repo.update_state(exec_key, state="RECONCILIATION", outcome=f"Exception: {e}")
+                        except Exception:
+                            pass
                 else:
                     self.task_repo.update_state(task.id, TaskState.MANUAL_REVIEW, worker_id=worker_id, enforce_transition=False)
+                    if self.execution_identity_repo:
+                        try:
+                            self.execution_identity_repo.update_state(exec_key, state="FAILED", outcome=f"Exception: {e}")
+                        except Exception:
+                            pass
                 return False
         finally:
             self._active_execution_keys.discard(exec_key)
@@ -138,4 +219,4 @@ class ExecutionService:
     def _compute_execution_key(task: Task) -> str:
         """Deterministic key for deduplicating concurrent executions of the same logical task."""
         raw = f"{task.contact_id}|{task.id}|{task.type.value}|{task.sequence}"
-        return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]

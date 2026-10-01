@@ -323,3 +323,42 @@ class SourceRow:
     notes: Optional[str] = None
     raw_values: Dict[str, Any] = field(default_factory=dict)
     checksum: str = ""
+
+
+@dataclass
+class ExecutionIdentity:
+    execution_key: str
+    task_id: str
+    contact_id: str
+    message_id: Optional[str] = None
+    message_hash: Optional[str] = None
+    attempt: int = 1
+    worker_id: Optional[str] = None
+    session_id: Optional[str] = None
+    correlation_id: Optional[str] = None
+    state: str = "CREATED"
+    outcome: Optional[str] = None
+    created_at: str = field(default_factory=utc_now_iso)
+    started_at: Optional[str] = None
+    completed_at: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class RateLimitCooldown:
+    id: str
+    scope: str
+    reason: str
+    error_code: str
+    detected_at: str
+    cooldown_until: str
+    account_id: Optional[str] = None
+    detected_by_worker: Optional[str] = None
+    detected_by_session: Optional[str] = None
+    is_active: bool = True
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+

@@ -222,61 +222,19 @@ class TaskRepository(BaseRepository):
     ) -> bool:
         """
         Atomically claim a task for execution by a worker.
-        Only succeeds if task is in READY or QUEUED state and not already locked.
-        Sets both lock_token and lease fields atomically.
+        Delegates to the authoritative acquire_lease API.
         """
-        now = datetime.now(timezone.utc)
-        now_iso = now.isoformat()
-        expires_iso = (now + timedelta(seconds=lease_duration_seconds)).isoformat()
-        query = """
-            UPDATE tasks SET
-                status = ?,
-                worker_id = ?,
-                lock_token = ?,
-                locked_at = ?,
-                lease_id = ?,
-                lease_owner = ?,
-                lease_acquired_at = ?,
-                lease_expires_at = ?,
-                started_at = COALESCE(started_at, ?),
-                attempt_count = attempt_count + 1,
-                updated_at = ?
-            WHERE id = ?
-              AND status IN ('READY', 'QUEUED')
-              AND (lock_token IS NULL OR lock_token = '');
-        """
-        with self.db.transaction() as conn:
-            cursor = conn.execute(
-                query,
-                (
-                    TaskState.RUNNING.value,
-                    worker_id,
-                    lock_token,
-                    now_iso,
-                    lock_token,
-                    worker_id,
-                    now_iso,
-                    expires_iso,
-                    now_iso,
-                    now_iso,
-                    task_id,
-                ),
-            )
-            return cursor.rowcount > 0
+        lid = self.acquire_lease(
+            task_id=task_id,
+            worker_id=worker_id,
+            lease_duration_seconds=lease_duration_seconds,
+            lease_id=lock_token,
+        )
+        return lid is not None
 
     def release_task(self, task_id: str, lock_token: str) -> bool:
-        """Release a task lock."""
-        now_iso = utc_now_iso()
-        query = """
-            UPDATE tasks SET
-                lock_token = NULL,
-                locked_at = NULL,
-                updated_at = ?
-            WHERE id = ? AND lock_token = ?;
-        """
-        with self.db.transaction() as conn:
-            cursor = conn.execute(query, (now_iso, task_id, lock_token))
-            return cursor.rowcount > 0
+        """Release a task lock and lease."""
+        return self.release_lease(task_id=task_id, lease_id=lock_token)
 
     def unlock_task(self, task_id: str) -> bool:
         """Unconditionally release a task lock and lease (e.g. on worker crash recovery)."""
@@ -340,18 +298,17 @@ class TaskRepository(BaseRepository):
         task_id: str,
         worker_id: str,
         lease_duration_seconds: int = 120,
+        lease_id: Optional[str] = None,
     ) -> Optional[str]:
         """
         Atomically acquire a persistent lease on a task for a worker.
-        Only succeeds if:
-        1. Task is in READY or QUEUED state and lease is unowned/expired, OR
-        2. Previous lease on the task has expired.
+        Only succeeds if task is in READY or QUEUED state and lease is unowned or expired.
         Returns the unique lease_id on success, None on failure.
         """
         now = datetime.now(timezone.utc)
         now_iso = now.isoformat()
         expires_iso = (now + timedelta(seconds=lease_duration_seconds)).isoformat()
-        lease_id = generate_id("LEASE")
+        assigned_lease_id = lease_id or generate_id("LEASE")
 
         query = """
             UPDATE tasks SET
@@ -367,19 +324,17 @@ class TaskRepository(BaseRepository):
                 attempt_count = attempt_count + 1,
                 updated_at = ?
             WHERE id = ?
-              AND (
-                    (status IN ('READY', 'QUEUED') AND (lease_expires_at IS NULL OR lease_expires_at < ?))
-                 OR (lease_expires_at IS NOT NULL AND lease_expires_at < ?)
-              );
+              AND status IN ('READY', 'QUEUED', 'RUNNING')
+              AND (lease_id IS NULL OR lease_expires_at < ?);
         """
         with self.db.transaction() as conn:
             cursor = conn.execute(
                 query,
                 (
                     worker_id,
-                    lease_id,
+                    assigned_lease_id,
                     now_iso,
-                    lease_id,
+                    assigned_lease_id,
                     worker_id,
                     now_iso,
                     expires_iso,
@@ -387,11 +342,10 @@ class TaskRepository(BaseRepository):
                     now_iso,
                     task_id,
                     now_iso,
-                    now_iso,
                 ),
             )
             if cursor.rowcount > 0:
-                return lease_id
+                return assigned_lease_id
         return None
 
     def renew_lease(
@@ -401,7 +355,7 @@ class TaskRepository(BaseRepository):
         worker_id: str,
         lease_duration_seconds: int = 120,
     ) -> bool:
-        """Renew an actively held lease. Only the lease owner can renew."""
+        """Renew an actively held lease. Only the lease owner can renew before expiry."""
         now = datetime.now(timezone.utc)
         now_iso = now.isoformat()
         expires_iso = (now + timedelta(seconds=lease_duration_seconds)).isoformat()
@@ -410,30 +364,47 @@ class TaskRepository(BaseRepository):
             UPDATE tasks SET
                 lease_expires_at = ?,
                 updated_at = ?
-            WHERE id = ? AND lease_id = ? AND lease_owner = ?;
+            WHERE id = ? AND (lease_id = ? OR lock_token = ?) AND (lease_owner = ? OR worker_id = ?) AND lease_expires_at > ?;
         """
         with self.db.transaction() as conn:
-            cursor = conn.execute(query, (expires_iso, now_iso, task_id, lease_id, worker_id))
+            cursor = conn.execute(query, (expires_iso, now_iso, task_id, lease_id, lease_id, worker_id, worker_id, now_iso))
             return cursor.rowcount > 0
 
     def release_lease(
         self,
         task_id: str,
         lease_id: str,
-        worker_id: str,
+        worker_id: Optional[str] = None,
     ) -> bool:
-        """Release a held task lease. Only the lease owner can release."""
+        """Release a held task lease and lock."""
         now_iso = utc_now_iso()
-        query = """
-            UPDATE tasks SET
-                lease_id = NULL,
-                lease_owner = NULL,
-                lease_expires_at = NULL,
-                updated_at = ?
-            WHERE id = ? AND lease_id = ? AND lease_owner = ?;
-        """
+        if worker_id is not None:
+            query = """
+                UPDATE tasks SET
+                    lock_token = NULL,
+                    locked_at = NULL,
+                    lease_id = NULL,
+                    lease_owner = NULL,
+                    lease_expires_at = NULL,
+                    updated_at = ?
+                WHERE id = ? AND (lease_id = ? OR lock_token = ?) AND (lease_owner = ? OR worker_id = ?);
+            """
+            params = (now_iso, task_id, lease_id, lease_id, worker_id, worker_id)
+        else:
+            query = """
+                UPDATE tasks SET
+                    lock_token = NULL,
+                    locked_at = NULL,
+                    lease_id = NULL,
+                    lease_owner = NULL,
+                    lease_expires_at = NULL,
+                    updated_at = ?
+                WHERE id = ? AND (lease_id = ? OR lock_token = ?);
+            """
+            params = (now_iso, task_id, lease_id, lease_id)
+
         with self.db.transaction() as conn:
-            cursor = conn.execute(query, (now_iso, task_id, lease_id, worker_id))
+            cursor = conn.execute(query, params)
             return cursor.rowcount > 0
 
     def is_lease_valid(
@@ -450,38 +421,95 @@ class TaskRepository(BaseRepository):
                 """
                 SELECT id FROM tasks
                 WHERE id = ?
-                  AND lease_id = ?
-                  AND lease_owner = ?
+                  AND (lease_id = ? OR lock_token = ?)
+                  AND (lease_owner = ? OR worker_id = ?)
                   AND lease_expires_at > ?;
                 """,
-                (task_id, lease_id, worker_id, now_iso),
+                (task_id, lease_id, lease_id, worker_id, worker_id, now_iso),
             )
         else:
             cursor = conn.execute(
                 """
                 SELECT id FROM tasks
                 WHERE id = ?
-                  AND lease_id = ?
+                  AND (lease_id = ? OR lock_token = ?)
                   AND lease_expires_at > ?;
                 """,
-                (task_id, lease_id, now_iso),
+                (task_id, lease_id, lease_id, now_iso),
             )
         return cursor.fetchone() is not None
 
+    def recover_expired_lease(self, task_id: str) -> Optional[Task]:
+        """
+        Safely recover a task whose lease has expired according to the strict state policy:
+        READY/QUEUED -> READY (clears lease)
+        RUNNING -> INTERRUPTED (clears lease)
+        SENDING -> RECONCILING (clears lease, prevents duplicate sends)
+        VERIFYING -> RECONCILING (clears lease, unconfirmed outcome)
+        Never silently convert SENDING -> READY.
+        """
+        now_iso = utc_now_iso()
+        with self.db.transaction() as conn:
+            cursor = conn.execute("SELECT * FROM tasks WHERE id = ?;", (task_id,))
+            row = cursor.fetchone()
+            if not row:
+                return None
+
+            lease_expires_at = row["lease_expires_at"]
+            if not lease_expires_at or lease_expires_at >= now_iso:
+                return None
+
+            current_status = row["status"]
+            if current_status in ("READY", "QUEUED"):
+                new_status = TaskState.READY.value
+            elif current_status == "RUNNING":
+                new_status = TaskState.INTERRUPTED.value
+            elif current_status in ("SENDING", "VERIFYING"):
+                new_status = TaskState.RECONCILING.value
+            else:
+                new_status = current_status
+
+            conn.execute(
+                """
+                UPDATE tasks SET
+                    status = ?,
+                    lock_token = NULL,
+                    locked_at = NULL,
+                    lease_id = NULL,
+                    lease_owner = NULL,
+                    lease_expires_at = NULL,
+                    updated_at = ?
+                WHERE id = ? AND lease_expires_at < ?;
+                """,
+                (new_status, now_iso, task_id, now_iso),
+            )
+        return self.get_by_id(task_id)
+
     def recover_expired_leases(self) -> List[Task]:
-        """Find tasks whose lease has expired and return them."""
+        """
+        Find and safely recover all tasks whose leases have expired according to the state policy:
+        READY/QUEUED -> READY
+        RUNNING -> INTERRUPTED
+        SENDING/VERIFYING -> RECONCILING
+        """
         now_iso = utc_now_iso()
         conn = self.db.get_connection()
         cursor = conn.execute(
             """
-            SELECT * FROM tasks
+            SELECT id FROM tasks
             WHERE lease_expires_at IS NOT NULL
               AND lease_expires_at < ?
-              AND status IN ('RUNNING', 'SENDING', 'VERIFYING');
+              AND status IN ('READY', 'QUEUED', 'RUNNING', 'SENDING', 'VERIFYING');
             """,
             (now_iso,),
         )
-        return [self._row_to_task(row) for row in cursor.fetchall()]
+        task_ids = [row[0] for row in cursor.fetchall()]
+        recovered = []
+        for tid in task_ids:
+            task = self.recover_expired_lease(tid)
+            if task:
+                recovered.append(task)
+        return recovered
 
     def count_by_status(self) -> dict[str, int]:
         """Count tasks grouped by status."""
