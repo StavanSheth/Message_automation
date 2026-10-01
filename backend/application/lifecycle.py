@@ -135,11 +135,20 @@ class ApplicationLifecycleManager:
             except Exception as e:
                 logger.warning(f"Error stopping scheduler: {e}")
 
-        # 3 & 4. Stop workers and release active leases
+        # 3 & 4. Release active leases, stop workers
         if self.worker_manager:
             try:
+                # Release all active task leases held by workers before stopping
+                for worker in self.worker_manager.list_workers():
+                    if worker.current_task_id:
+                        try:
+                            self.task_repo.unlock_task(worker.current_task_id)
+                        except Exception as e:
+                            logger.warning(f"Error releasing lease for task {worker.current_task_id}: {e}")
                 if hasattr(self.worker_manager, "stop_all"):
                     self.worker_manager.stop_all()
+                elif hasattr(self.worker_manager, "shutdown_all"):
+                    self.worker_manager.shutdown_all()
                 logger.info("Workers stopped cleanly")
             except Exception as e:
                 logger.warning(f"Error stopping workers: {e}")

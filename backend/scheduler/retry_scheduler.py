@@ -23,6 +23,7 @@ NON_RETRYABLE_CODES = {
     ErrorCode.DUPLICATE_TASK,
     ErrorCode.RATE_LIMITED,
     ErrorCode.ACTION_BLOCKED,
+    ErrorCode.CHALLENGE_REQUIRED,
 }
 
 

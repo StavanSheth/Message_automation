@@ -124,6 +124,7 @@ def test_full_pipeline_simulation_send_to_reply_cancellation(e2e_system):
     mock_session.is_alive.return_value = True
     mock_session.navigate.return_value = "https://www.instagram.com/jordanlee/"
     mock_session.evaluate.side_effect = [
+        {"state": "AUTHENTICATED", "reason": "navigation_elements_present"},  # Auth validator
         {"status": "AVAILABLE"},  # Navigator
         {                         # Profile Reader
             "url": "https://www.instagram.com/jordanlee/",

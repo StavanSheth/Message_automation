@@ -299,6 +299,7 @@ def test_instagram_automation_service_full_flow(db_repos):
     # 6. Sender submit -> success
     # 7. Send verifier -> found match
     mock_session.evaluate.side_effect = [
+        {"state": "AUTHENTICATED", "reason": "navigation_elements_present"},  # Auth validator
         {"status": "AVAILABLE"},  # Navigator
         {                         # Reader
             "url": "https://www.instagram.com/alexriver/",
