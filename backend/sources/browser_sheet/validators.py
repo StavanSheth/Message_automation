@@ -44,8 +44,14 @@ def validate_spreadsheet_url(url: str) -> Tuple[UrlValidationResult, Optional[st
     except Exception as e:
         return UrlValidationResult.INVALID_URL, f"Malformed URL syntax: {e}"
 
-    if not parsed.scheme or not parsed.netloc:
-        return UrlValidationResult.INVALID_URL, "URL missing scheme or network host"
+    if not parsed.scheme:
+        return UrlValidationResult.INVALID_URL, "URL missing scheme"
+
+    if parsed.scheme.lower() == "file":
+        return UrlValidationResult.VALID_SOURCE, None
+
+    if not parsed.netloc:
+        return UrlValidationResult.INVALID_URL, "URL missing network host"
 
     # HTTPS enforcement: allow http only for local test servers
     is_local = parsed.hostname in ("localhost", "127.0.0.1", "::1", "testserver")

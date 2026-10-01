@@ -53,9 +53,7 @@ class BrowserManager:
         # Determine effective worker mode and max concurrency
         self.effective_mode, self.effective_max_workers = self._resolve_mode_and_limits()
         logger.info(
-            f"BrowserManager initialized in {self.effective_mode.value} mode with max {self.effective_max_workers} worker(s)",
-            gpu_available=self.hardware.gpu_available,
-            multi_available=self.hardware.multi_browser_available,
+            f"BrowserManager initialized in {self.effective_mode.value} mode with max {self.effective_max_workers} worker(s)"
         )
 
     def _resolve_mode_and_limits(self) -> tuple[WorkerMode, int]:
@@ -66,14 +64,14 @@ class BrowserManager:
         - Falls back to SINGLE_BROWSER if requirements are not met.
         - SINGLE_BROWSER is always bounded to max 1 worker.
         """
-        requested_mode_str = self.settings.worker_mode.upper()
+        requested_mode_str = str(self.settings.worker_mode).upper()
 
-        if requested_mode_str == WorkerMode.MULTI_BROWSER.value:
-            if not self.hardware.multi_browser_available:
+        if requested_mode_str in (WorkerMode.MULTI_BROWSER.value, WorkerMode.MULTI_BROWSER.name):
+            ram_ok = (self.hardware.total_ram_gb >= 4.0 or self.hardware.available_ram_gb >= 3.0)
+            if not self.hardware.multi_browser_available or not ram_ok:
+                reason = "insufficient_ram" if not ram_ok else "insufficient_gpu"
                 logger.warning(
-                    "MULTI_BROWSER mode requested but hardware does not meet requirements (NVIDIA GPU with >=2GB VRAM and >=4GB RAM). Falling back to SINGLE_BROWSER.",
-                    requested_mode=requested_mode_str,
-                    fallback_mode=WorkerMode.SINGLE_BROWSER.value,
+                    f"MULTI_BROWSER mode requested ({requested_mode_str}) but hardware does not meet requirements ({reason}). Falling back to SINGLE_BROWSER."
                 )
                 if self.event_repo:
                     self.event_repo.record(
@@ -86,11 +84,13 @@ class BrowserManager:
                             "action": "mode_fallback",
                             "requested_mode": requested_mode_str,
                             "resolved_mode": WorkerMode.SINGLE_BROWSER.value,
-                            "reason": "hardware_insufficient_for_multi_browser",
+                            "reason": f"hardware_{reason}_for_multi_browser",
                         },
                     )
                 return WorkerMode.SINGLE_BROWSER, 1
-            return WorkerMode.MULTI_BROWSER, max(1, min(self.settings.max_workers, self.hardware.recommended_max_workers))
+
+            effective_limit = max(1, min(self.settings.max_workers, self.hardware.recommended_max_workers))
+            return WorkerMode.MULTI_BROWSER, effective_limit
 
         return WorkerMode.SINGLE_BROWSER, 1
 
@@ -101,7 +101,8 @@ class BrowserManager:
         custom_driver: Optional[BrowserDriver] = None,
     ) -> BrowserSessionInstance:
         """
-        Create and track a new browser session, enforcing concurrency and duplicate prevention.
+        Create and track a new browser session, enforcing concurrency, profile isolation,
+        and duplicate prevention.
         """
         # Prevent duplicate sessions for the same worker
         if worker_id and worker_id in self._worker_session_map:
@@ -109,11 +110,20 @@ class BrowserManager:
             existing_sess = self._active_sessions.get(existing_sess_id)
             if existing_sess and existing_sess.is_alive():
                 logger.info(
-                    "Reusing existing active browser session for worker",
-                    worker_id=worker_id,
-                    session_id=existing_sess_id,
+                    f"Reusing existing active browser session for worker {worker_id}: {existing_sess_id}"
                 )
                 return existing_sess
+            elif existing_sess_id:
+                # Existing session is dead or missing, clean up stale mapping
+                self.stop_session(existing_sess_id)
+
+        # Clean up any dead/stopped sessions before checking capacity
+        dead_session_ids = [
+            sid for sid, sess in list(self._active_sessions.items())
+            if not sess.is_alive() and sess.status in (SessionStatus.STOPPED, SessionStatus.CRASHED)
+        ]
+        for sid in dead_session_ids:
+            self.stop_session(sid)
 
         # Enforce maximum concurrent sessions
         active_count = len([s for s in self._active_sessions.values() if s.is_alive()])
@@ -127,9 +137,24 @@ class BrowserManager:
         prof_name = profile_name or (f"worker_{worker_id}" if worker_id else f"session_{session_id}")
         profile = self.profile_manager.create_or_get_profile(prof_name)
 
+        # Profile isolation: verify profile is not in use by another active worker
+        for s in self._active_sessions.values():
+            if s.is_alive() and s.profile_id == profile.profile_id and s.worker_id != worker_id:
+                raise BrowserSessionError(
+                    f"Profile '{profile.profile_id}' is already in use by active worker '{s.worker_id}'. "
+                    "Browser profiles cannot be shared between isolated workers.",
+                    code=ErrorCode.SOURCE_UNAVAILABLE,
+                )
+
         driver = custom_driver
         if not driver and self.driver_factory:
-            driver = self.driver_factory()
+            try:
+                driver = self.driver_factory()
+            except Exception as e:
+                raise BrowserSessionError(
+                    f"Driver initialization failed: {e}",
+                    code=ErrorCode.BROWSER_CRASH,
+                ) from e
 
         launch_config = BrowserLaunchConfig(
             browser_type=BrowserType(self.settings.browser_type.lower()),
@@ -165,50 +190,83 @@ class BrowserManager:
 
         return session
 
+    def start_session(self, session_id: str) -> BrowserSessionInstance:
+        """Start a created session, ensuring failed startups do not leave phantom sessions."""
+        session = self._active_sessions.get(session_id)
+        if not session:
+            raise BrowserSessionError(f"Session {session_id} not found", code=ErrorCode.SOURCE_UNAVAILABLE)
+        try:
+            session.start()
+            return session
+        except Exception:
+            self.stop_session(session_id)
+            raise
+
     def get_session(self, session_id: str) -> Optional[BrowserSessionInstance]:
         return self._active_sessions.get(session_id)
 
     def get_session_for_worker(self, worker_id: str) -> Optional[BrowserSessionInstance]:
         sess_id = self._worker_session_map.get(worker_id)
         if sess_id:
-            return self._active_sessions.get(sess_id)
+            sess = self._active_sessions.get(sess_id)
+            if sess and sess.is_alive():
+                return sess
+            # Clean up stale mapping if session is dead or missing
+            self._worker_session_map.pop(worker_id, None)
         return None
 
     def stop_session(self, session_id: str) -> None:
-        """Stop session and clean up mapping."""
-        session = self._active_sessions.get(session_id)
+        """Stop session, unregister lifecycle, and clean up worker mappings. Idempotent."""
+        session = self._active_sessions.pop(session_id, None)
         if session:
-            session.stop()
-            self.lifecycle_manager.stop_session(session_id)
+            try:
+                session.stop()
+            except Exception as e:
+                logger.warning(f"Error while stopping session {session_id}: {e}")
+
+            try:
+                self.lifecycle_manager.stop_session(session_id)
+            except Exception as e:
+                logger.warning(f"Error in lifecycle manager stopping {session_id}: {e}")
+
             if session.worker_id and self._worker_session_map.get(session.worker_id) == session_id:
-                del self._worker_session_map[session.worker_id]
-            self._active_sessions.pop(session_id, None)
+                self._worker_session_map.pop(session.worker_id, None)
 
             if self.event_repo:
-                self.event_repo.record(
-                    event_code=EventCode.BROWSER_SESSION_CLOSED,
-                    category="browser",
-                    level=EventLevel.INFO,
-                    entity_type="browser_session",
-                    entity_id=session_id,
-                    payload={"worker_id": session.worker_id},
-                )
+                try:
+                    self.event_repo.record(
+                        event_code=EventCode.BROWSER_SESSION_CLOSED,
+                        category="browser",
+                        level=EventLevel.INFO,
+                        entity_type="browser_session",
+                        entity_id=session_id,
+                        payload={"worker_id": session.worker_id},
+                    )
+                except Exception:
+                    pass
+        else:
+            # Also clean up any lingering worker mappings to this session_id
+            for wid, sid in list(self._worker_session_map.items()):
+                if sid == session_id:
+                    self._worker_session_map.pop(wid, None)
 
     def check_health(self) -> Dict[str, Any]:
         """Aggregate health status of all tracked sessions."""
         results = {}
-        for sess_id, sess in self._active_sessions.items():
+        for sess_id, sess in list(self._active_sessions.items()):
             results[sess_id] = BrowserHealthChecker.check_session(sess)
         return {
             "mode": self.effective_mode.value,
             "max_workers": self.effective_max_workers,
-            "active_sessions": len(self._active_sessions),
+            "active_sessions": len([s for s in self._active_sessions.values() if s.is_alive()]),
             "sessions": {k: v.__dict__ for k, v in results.items()},
         }
 
     def shutdown(self) -> None:
-        """Stop all sessions and tear down lifecycle manager."""
+        """Stop all sessions and tear down lifecycle manager. Idempotent."""
         logger.info("Shutting down BrowserManager and all active sessions")
         for sess_id in list(self._active_sessions.keys()):
             self.stop_session(sess_id)
         self.lifecycle_manager.cleanup_all()
+        self._active_sessions.clear()
+        self._worker_session_map.clear()

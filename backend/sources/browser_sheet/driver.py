@@ -12,6 +12,7 @@ from backend.browser.driver import BrowserDriver
 from backend.browser.exceptions import BrowserException, BrowserTimeoutError, BrowserNavigationError
 from backend.sources.browser_sheet.validators import validate_spreadsheet_url, UrlValidationResult
 from backend.sources.browser_sheet.spreadsheet import SpreadsheetStructureValidator
+from backend.sources.xlsx.adapter import normalize_header
 from backend.events.logger import get_logger
 
 logger = get_logger("browser_spreadsheet_driver")
@@ -96,7 +97,7 @@ class PlaywrightSpreadsheetDriver:
             # 1. Detect login wall via URL
             lower_url = current_page_url.lower()
             if any(term in lower_url for term in ("accounts.google.com/signin", "login.microsoftonline.com", "login.live.com", "auth")):
-                logger.info("Login required wall encountered for spreadsheet", url=url)
+                logger.info(f"Login required wall encountered for spreadsheet: {url}")
                 return SourceAccessStatus.LOGIN_REQUIRED
 
             # 2. Inspect page text/DOM for access denied or permissions
@@ -110,7 +111,7 @@ class PlaywrightSpreadsheetDriver:
                 return SourceAccessStatus.LOGIN_REQUIRED
 
             if any(term in title or term in body_sample for term in ("access denied", "you need permission", "request access", "403 forbidden")):
-                logger.warning("Access prohibited for spreadsheet URL", url=url)
+                logger.warning(f"Access prohibited for spreadsheet URL: {url}")
                 return SourceAccessStatus.ACCESS_PROHIBITED
 
             # 3. Verify presence of spreadsheet table elements
@@ -125,7 +126,7 @@ class PlaywrightSpreadsheetDriver:
             )
 
             if not table_check:
-                logger.warning("Page loaded but no recognizable spreadsheet structure found", url=url)
+                logger.warning(f"Page loaded but no recognizable spreadsheet structure found: {url}")
                 return SourceAccessStatus.UNSUPPORTED_STRUCTURE
 
             return SourceAccessStatus.ACCESSIBLE
@@ -135,7 +136,7 @@ class PlaywrightSpreadsheetDriver:
         except BrowserNavigationError:
             return SourceAccessStatus.SOURCE_UNAVAILABLE
         except Exception as e:
-            logger.error(f"Error checking spreadsheet access: {e}", url=url)
+            logger.error(f"Error checking spreadsheet access for {url}: {e}")
             return SourceAccessStatus.SOURCE_UNAVAILABLE
 
     def open(self, url: str) -> bool:
@@ -248,7 +249,10 @@ class PlaywrightSpreadsheetDriver:
         if not self._cached_headers or self._current_url != url:
             self.read_headers(url)
 
-        col_idx = self._canonical_to_col.get(column_name)
+        normalized_col = normalize_header(column_name) or column_name.lower().strip()
+        col_idx = self._canonical_to_col.get(normalized_col)
+        if col_idx is None:
+            col_idx = self._canonical_to_col.get(column_name)
         if col_idx is None:
             raise ValidationError(f"Column '{column_name}' not found in spreadsheet")
 
@@ -297,7 +301,10 @@ class PlaywrightSpreadsheetDriver:
         data_tr_idx = row_index - 2
 
         for field_name, new_val in updates.items():
-            col_idx = self._canonical_to_col.get(field_name)
+            normalized_field = normalize_header(field_name) or field_name.lower().strip()
+            col_idx = self._canonical_to_col.get(normalized_field)
+            if col_idx is None:
+                col_idx = self._canonical_to_col.get(field_name)
             if col_idx is None:
                 raise ValidationError(f"Cannot update unknown column '{field_name}'")
 

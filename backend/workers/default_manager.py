@@ -37,6 +37,27 @@ class DefaultWorkerManager(WorkerManager):
         self._workers: Dict[str, Worker] = {}
 
     @property
+    def effective_max_workers(self) -> int:
+        """Authoritative maximum worker capacity, governed by BrowserManager if attached."""
+        if self.browser_manager and hasattr(self.browser_manager, "effective_max_workers"):
+            val = self.browser_manager.effective_max_workers
+            if isinstance(val, int):
+                return val
+        return max(1, self.settings.max_workers)
+
+    @property
+    def effective_mode(self) -> WorkerMode:
+        """Authoritative execution mode, governed by BrowserManager if attached."""
+        if self.browser_manager and hasattr(self.browser_manager, "effective_mode"):
+            val = self.browser_manager.effective_mode
+            if isinstance(val, WorkerMode):
+                return val
+        try:
+            return WorkerMode(self.settings.worker_mode)
+        except (ValueError, AttributeError):
+            return WorkerMode.SINGLE_BROWSER
+
+    @property
     def active_count(self) -> int:
         """Number of active (non-stopped/crashed) workers."""
         return sum(
@@ -44,9 +65,13 @@ class DefaultWorkerManager(WorkerManager):
             if w.status not in (WorkerStatus.STOPPED, WorkerStatus.CRASHED)
         )
 
-    def start_worker(self, mode: WorkerMode) -> WorkerRecord:
-        """Launch a new worker with an associated browser session. Enforces max_workers."""
-        max_allowed = self.settings.max_workers
+    def start_worker(self, mode: Optional[WorkerMode] = None) -> WorkerRecord:
+        """Launch a new worker with an associated browser session. Enforces authoritative max_workers."""
+        resolved_mode = mode or self.effective_mode
+        if self.effective_mode == WorkerMode.SINGLE_BROWSER:
+            resolved_mode = WorkerMode.SINGLE_BROWSER
+
+        max_allowed = self.effective_max_workers
         if self.active_count >= max_allowed:
             raise RuntimeError(
                 f"Cannot start worker: {self.active_count} active workers "
@@ -59,13 +84,17 @@ class DefaultWorkerManager(WorkerManager):
         session = None
         if self.browser_manager:
             session_inst = self.browser_manager.create_session(worker_id=worker_id)
-            session_inst.start()
+            try:
+                session_inst.start()
+            except Exception:
+                self.browser_manager.stop_session(session_inst.session_id)
+                raise
             session = session_inst
 
         worker = Worker(
             worker_id=worker_id,
             worker_code=worker_code,
-            mode=mode,
+            mode=resolved_mode,
             task_repo=self.task_repo,
             event_repo=self.event_repo,
             session=session,

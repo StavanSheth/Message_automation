@@ -117,9 +117,15 @@ class BrowserSpreadsheetSource(SourceAdapter):
             )
 
         if not self.is_open:
+            if not self.open():
+                return False
+
+        try:
+            row_idx_int = int(row_index)
+        except (ValueError, TypeError):
             return False
 
-        return self.driver.update_cell(self.url, row_index, updates)
+        return self.driver.update_cell(self.url, row_idx_int, updates)
 
     def close(self) -> None:
         """Close browser context and driver."""

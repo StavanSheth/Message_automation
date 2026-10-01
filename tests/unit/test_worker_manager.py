@@ -102,3 +102,47 @@ def test_process_tasks_dispatch(manager_env):
     mgr.start_worker(WorkerMode.SINGLE_BROWSER)
     processed = mgr.process_tasks(max_tasks=1)
     assert processed == 1
+
+
+def test_worker_manager_obeys_browser_manager_limits(manager_env):
+    mgr, task_repo, event_repo, db = manager_env
+    # BrowserManager dictates max 2 workers, settings configured for 10
+    mgr.browser_manager.effective_max_workers = 2
+    mgr.browser_manager.effective_mode = WorkerMode.MULTI_BROWSER
+    set_settings(AppSettings(max_workers=10))
+
+    mgr.start_worker(WorkerMode.MULTI_BROWSER)
+    mgr.start_worker(WorkerMode.MULTI_BROWSER)
+    assert mgr.active_count == 2
+
+    # Third worker must be rejected
+    with pytest.raises(RuntimeError, match="already at max_workers=2"):
+        mgr.start_worker(WorkerMode.MULTI_BROWSER)
+
+
+def test_worker_manager_obeys_browser_manager_single_mode_fallback(manager_env):
+    mgr, task_repo, event_repo, db = manager_env
+    mgr.browser_manager.effective_max_workers = 1
+    mgr.browser_manager.effective_mode = WorkerMode.SINGLE_BROWSER
+
+    # Requesting MULTI_BROWSER must be forced to SINGLE_BROWSER with ceiling 1
+    rec = mgr.start_worker(WorkerMode.MULTI_BROWSER)
+    assert rec.mode == WorkerMode.SINGLE_BROWSER
+    with pytest.raises(RuntimeError, match="already at max_workers=1"):
+        mgr.start_worker(WorkerMode.MULTI_BROWSER)
+
+
+def test_worker_manager_session_startup_failure_cleans_up(manager_env):
+    mgr, task_repo, event_repo, db = manager_env
+    failing_session = MagicMock()
+    failing_session.session_id = "SESS-FAIL"
+    failing_session.start.side_effect = RuntimeError("Browser crashed during start")
+    mgr.browser_manager.create_session.return_value = failing_session
+
+    with pytest.raises(RuntimeError, match="Browser crashed during start"):
+        mgr.start_worker(WorkerMode.SINGLE_BROWSER)
+
+    # BrowserManager's stop_session must have been called and no workers retained
+    mgr.browser_manager.stop_session.assert_called_with("SESS-FAIL")
+    assert mgr.active_count == 0
+
