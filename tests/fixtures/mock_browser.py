@@ -31,6 +31,12 @@ class MockBrowserDriver(BrowserDriver):
         self._has_context = False
         self._has_page = False
 
+    def simulate_crash(self) -> None:
+        """Simulate unexpected browser process death."""
+        self._connected = False
+        self._has_context = False
+        self._has_page = False
+
     def is_connected(self) -> bool:
         return self._connected
 
@@ -49,6 +55,9 @@ class MockBrowserDriver(BrowserDriver):
         self._has_page = False
 
     def navigate(self, url: str, timeout_ms: Optional[int] = None) -> str:
+        if not self._connected:
+            from backend.browser.exceptions import BrowserCrashError
+            raise BrowserCrashError("Browser disconnected")
         self._current_url = url
         self.navigate_history.append(url)
         return url
@@ -60,9 +69,19 @@ class MockBrowserDriver(BrowserDriver):
         pass
 
     def evaluate(self, expression: str, arg: Any = None) -> Any:
+        if not self._connected:
+            from backend.browser.exceptions import BrowserCrashError
+            raise BrowserCrashError("Browser disconnected")
         # Return pre-configured results or sensible defaults
         if expression in self._evaluate_results:
-            return self._evaluate_results[expression]
+            res = self._evaluate_results[expression]
+            return res(arg) if callable(res) else res
+        if "return 42" in expression or "=> 42" in expression:
+            return 42
+        if "=> 'hello'" in expression:
+            return "hello"
+        if "a + b" in expression and isinstance(arg, (list, tuple)) and len(arg) == 2:
+            return arg[0] + arg[1]
         # Default: return empty dict for object queries, True for boolean queries
         if "return" in expression and "true" in expression.lower():
             return True

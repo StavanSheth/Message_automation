@@ -60,15 +60,13 @@ class BrowserManager:
 
     def _resolve_mode_and_limits(self) -> tuple[WorkerMode, int]:
         """
-        Resolve SINGLE vs MULTI mode using hardware and settings.
-        Handles AUTO / SINGLE / MULTI logic cleanly without crashing.
+        Resolve SINGLE_BROWSER vs MULTI_BROWSER mode using hardware and settings.
+        Follows Section 11 of Product Functional Spec:
+        - If MULTI_BROWSER requested, requires qualifying GPU (>=2GB VRAM) and RAM (>=4GB).
+        - Falls back to SINGLE_BROWSER if requirements are not met.
+        - SINGLE_BROWSER is always bounded to max 1 worker.
         """
         requested_mode_str = self.settings.worker_mode.upper()
-
-        if requested_mode_str == "AUTO":
-            if self.hardware.multi_browser_available:
-                return WorkerMode.MULTI_BROWSER, min(self.settings.max_workers, self.hardware.recommended_max_workers)
-            return WorkerMode.SINGLE_BROWSER, 1
 
         if requested_mode_str == WorkerMode.MULTI_BROWSER.value:
             if not self.hardware.multi_browser_available:

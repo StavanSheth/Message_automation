@@ -1,4 +1,4 @@
-"""Recovery service contract and foundation implementation for interrupted tasks and crashed workers."""
+"""Authoritative recovery service and reconciliation engine for interrupted tasks and crashed workers."""
 
 from abc import ABC, abstractmethod
 from typing import List, Optional
@@ -6,10 +6,14 @@ from backend.domain.models import Task, utc_now_iso
 from backend.domain.enums import TaskState, EventCode, EventLevel, ErrorCode
 from backend.repositories.task_repo import TaskRepository
 from backend.repositories.event_repo import EventRepository
+from backend.repositories.error_repo import ErrorRepository
+from backend.events.logger import get_logger
+
+logger = get_logger("recovery_service")
 
 
 class RecoveryService(ABC):
-    """Contract for recovering interrupted tasks and reconciling unknown send results."""
+    """Contract for recovering interrupted tasks and reconciling unknown execution results."""
 
     @abstractmethod
     def reconcile_interrupted(self, action: str = "RECONCILING") -> List[Task]:
@@ -17,8 +21,28 @@ class RecoveryService(ABC):
         pass
 
     @abstractmethod
-    def reconcile_unknown_send(self, task_id: str) -> str:
-        """Inspect Instagram conversation state to determine if an unknown-send succeeded."""
+    def enter_reconciliation(self, task_id: str, reason: str) -> Task:
+        """Transition task into RECONCILING state."""
+        pass
+
+    @abstractmethod
+    def reconcile_task(
+        self,
+        task_id: str,
+        verification_confirmed: Optional[bool],
+        details: Optional[str] = None,
+    ) -> Task:
+        """Resolve a reconciling task based on verification evidence."""
+        pass
+
+    @abstractmethod
+    def recover_interrupted_tasks(self, max_retries: int = 3) -> List[Task]:
+        """Re-queue interrupted tasks that have remaining retries or escalate to manual review."""
+        pass
+
+    @abstractmethod
+    def reconcile_unknown_send(self, task_id: str, verification_confirmed: Optional[bool] = None) -> str:
+        """Reconcile unknown message execution."""
         pass
 
     @abstractmethod
@@ -29,19 +53,114 @@ class RecoveryService(ABC):
 
 class DefaultRecoveryService(RecoveryService):
     """
-    Phase 1 recovery engine foundation.
-    Transitions INTERRUPTED tasks according to the state machine:
-    INTERRUPTED -> RECONCILING / READY / MANUAL_REVIEW
+    Authoritative recovery and reconciliation service implementing:
+    RUNNING -> crash -> INTERRUPTED -> RECONCILING -> COMPLETED / FAILED / MANUAL_REVIEW
+    and:
+    INTERRUPTED -> safe retry -> QUEUED / READY.
     """
 
-    def __init__(self, task_repo: TaskRepository, event_repo: Optional[EventRepository] = None):
+    def __init__(
+        self,
+        task_repo: TaskRepository,
+        event_repo: Optional[EventRepository] = None,
+        error_repo: Optional[ErrorRepository] = None,
+    ):
         self.task_repo = task_repo
         self.event_repo = event_repo
+        self.error_repo = error_repo
+
+    def enter_reconciliation(self, task_id: str, reason: str = "") -> Task:
+        """Move a task into RECONCILING state."""
+        task = self.task_repo.update_state(task_id, TaskState.RECONCILING, enforce_transition=True)
+        if self.event_repo:
+            self.event_repo.record(
+                event_code=EventCode.TASK_STATE_CHANGED,
+                category="recovery",
+                level=EventLevel.WARNING,
+                entity_type="task",
+                entity_id=task_id,
+                payload={"action": "enter_reconciliation", "reason": reason},
+            )
+        logger.warning(f"Task {task_id} entered RECONCILING: {reason}")
+        return task
+
+    def reconcile_task(
+        self,
+        task_id: str,
+        verification_confirmed: Optional[bool],
+        details: Optional[str] = None,
+    ) -> Task:
+        """
+        Complete reconciliation for a task:
+        - verification_confirmed is True -> COMPLETED
+        - verification_confirmed is False -> FAILED
+        - verification_confirmed is None (indeterminate) -> MANUAL_REVIEW
+        """
+        if verification_confirmed is True:
+            target_state = TaskState.COMPLETED
+        elif verification_confirmed is False:
+            target_state = TaskState.FAILED
+        else:
+            target_state = TaskState.MANUAL_REVIEW
+
+        task = self.task_repo.update_state(task_id, target_state, enforce_transition=True)
+
+        if self.event_repo:
+            self.event_repo.record(
+                event_code=EventCode.TASK_RECONCILED,
+                category="recovery",
+                level=EventLevel.INFO if target_state == TaskState.COMPLETED else EventLevel.WARNING,
+                entity_type="task",
+                entity_id=task_id,
+                payload={
+                    "resolved_state": target_state.value,
+                    "verification_confirmed": verification_confirmed,
+                    "details": details,
+                },
+            )
+        logger.info(f"Task {task_id} reconciled to {target_state.value} (details: {details})")
+        return task
+
+    def recover_interrupted_tasks(self, max_retries: int = 3) -> List[Task]:
+        """
+        Recover tasks left in INTERRUPTED state:
+        - If attempt_count < max_retries: transition to QUEUED for retry.
+        - Else: transition to MANUAL_REVIEW.
+        """
+        interrupted = self.task_repo.list_interrupted()
+        recovered: List[Task] = []
+
+        for task in interrupted:
+            if task.attempt_count < max_retries:
+                updated = self.task_repo.update_state(task.id, TaskState.QUEUED, enforce_transition=False)
+                recovered.append(updated)
+                if self.event_repo:
+                    self.event_repo.record(
+                        event_code=EventCode.TASK_RETRY_SCHEDULED,
+                        category="recovery",
+                        level=EventLevel.INFO,
+                        entity_type="task",
+                        entity_id=task.id,
+                        payload={"action": "requeued_after_interruption", "attempts": task.attempt_count},
+                    )
+            else:
+                updated = self.task_repo.update_state(task.id, TaskState.MANUAL_REVIEW, enforce_transition=False)
+                recovered.append(updated)
+                if self.event_repo:
+                    self.event_repo.record(
+                        event_code=EventCode.TASK_STATE_CHANGED,
+                        category="recovery",
+                        level=EventLevel.WARNING,
+                        entity_type="task",
+                        entity_id=task.id,
+                        payload={"action": "escalated_to_manual_review_max_attempts", "attempts": task.attempt_count},
+                    )
+
+        return recovered
 
     def reconcile_interrupted(self, action: str = "RECONCILING") -> List[Task]:
         """
-        Transition INTERRUPTED tasks to the target reconciliation state.
-        action can be: 'RECONCILING' | 'READY' | 'MANUAL_REVIEW'
+        Transition INTERRUPTED tasks to target state ('RECONCILING', 'READY', 'MANUAL_REVIEW').
         """
         target_state_map = {
             "RECONCILING": TaskState.RECONCILING,
@@ -72,22 +191,28 @@ class DefaultRecoveryService(RecoveryService):
 
         return reconciled
 
-    def reconcile_unknown_send(self, task_id: str) -> str:
+    def reconcile_unknown_send(self, task_id: str, verification_confirmed: Optional[bool] = None) -> str:
         """
-        Inspect Instagram conversation state to determine if an unknown-send succeeded.
-        In Phase 1 foundation, moves task to MANUAL_REVIEW if unknown.
+        Reconcile unknown execution outcome.
+        Fail-closed: without positive verification, transitions to MANUAL_REVIEW.
         """
         task = self.task_repo.get_by_id(task_id)
         if not task:
             return "NOT_FOUND"
 
-        # Safe fail-closed rule: without browser verification, move to MANUAL_REVIEW
-        self.task_repo.update_state(task_id=task.id, new_state=TaskState.MANUAL_REVIEW)
-        return "MANUAL_REVIEW"
+        if verification_confirmed is True:
+            self.task_repo.update_state(task_id=task.id, new_state=TaskState.COMPLETED, enforce_transition=False)
+            return "COMPLETED"
+        elif verification_confirmed is False:
+            self.task_repo.update_state(task_id=task.id, new_state=TaskState.FAILED, enforce_transition=False)
+            return "FAILED"
+        else:
+            self.task_repo.update_state(task_id=task.id, new_state=TaskState.MANUAL_REVIEW, enforce_transition=False)
+            return "MANUAL_REVIEW"
 
     def recover_crashed_worker(self, worker_id: str) -> int:
         """
-        Find tasks locked by a crashed worker and release them to READY or INTERRUPTED.
+        Find tasks locked by a crashed worker and release them to INTERRUPTED.
         """
         conn = self.task_repo.db.get_connection()
         cursor = conn.execute(

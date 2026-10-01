@@ -1,19 +1,13 @@
 """Browser-accessed spreadsheet source adapter foundation."""
 
-from typing import List, Dict, Any, Optional, Callable, Protocol
+from typing import List, Dict, Any, Optional, Callable
 from urllib.parse import urlparse
 
 from backend.domain.models import SourceRow
 from backend.domain.enums import SourceType, SourceAccessStatus, ErrorCode
 from backend.domain.errors import ValidationError, SourceAccessError
 from backend.sources.base import SourceAdapter
-
-
-class BrowserSpreadsheetDriver(Protocol):
-    """Protocol for Phase 2/4 Playwright browser spreadsheet automation."""
-    def check_access(self, url: str) -> SourceAccessStatus: ...
-    def read_sheet(self, url: str) -> List[SourceRow]: ...
-    def update_cell(self, url: str, row_index: int, updates: Dict[str, Any]) -> bool: ...
+from backend.sources.browser_sheet.driver import BrowserSpreadsheetDriver
 
 
 class BrowserSpreadsheetSource(SourceAdapter):
@@ -74,6 +68,10 @@ class BrowserSpreadsheetSource(SourceAdapter):
         if status != SourceAccessStatus.ACCESSIBLE:
             self.is_open = False
             return False
+        if self.driver and hasattr(self.driver, "open"):
+            if not self.driver.open(self.url):
+                self.is_open = False
+                return False
         self.is_open = True
         return True
 
@@ -91,9 +89,17 @@ class BrowserSpreadsheetSource(SourceAdapter):
 
         if not self.is_open:
             if not self.open():
+                err_code = ErrorCode.SOURCE_UNAVAILABLE
+                if self._cached_access_status == SourceAccessStatus.ACCESS_PROHIBITED:
+                    err_code = ErrorCode.ACCESS_PROHIBITED
+                elif self._cached_access_status == SourceAccessStatus.LOGIN_REQUIRED:
+                    err_code = ErrorCode.SESSION_EXPIRED
+                elif self._cached_access_status == SourceAccessStatus.UNSUPPORTED_STRUCTURE:
+                    err_code = ErrorCode.INVALID_DATA
+
                 raise SourceAccessError(
                     f"Spreadsheet at {self.url} is not accessible: {self._cached_access_status}",
-                    code=ErrorCode.ACCESS_PROHIBITED if self._cached_access_status == SourceAccessStatus.ACCESS_PROHIBITED else ErrorCode.SOURCE_UNAVAILABLE,
+                    code=err_code,
                 )
 
         return self.driver.read_sheet(self.url)
@@ -116,6 +122,11 @@ class BrowserSpreadsheetSource(SourceAdapter):
         return self.driver.update_cell(self.url, row_index, updates)
 
     def close(self) -> None:
-        """Close browser context."""
+        """Close browser context and driver."""
         self.is_open = False
         self._cached_access_status = None
+        if self.driver:
+            try:
+                self.driver.close()
+            except Exception:
+                pass

@@ -217,3 +217,143 @@ class TestCrashRecovery:
         recovery = TaskReconciliationService(task_repo, event_repo, error_repo)
         result = recovery.reconcile_task("t-conf", verification_confirmed=True, details="message confirmed sent")
         assert result.status == TaskState.COMPLETED
+
+
+# ── Full Phase 2 End-to-End Pipeline ──────────────────────────────────────
+
+class TestPhase2EndToEnd:
+    """
+    Exercise complete chain:
+    Task -> Worker -> BrowserSession -> BrowserSpreadsheetDriver ->
+    BrowserSpreadsheetSource -> SourceService -> Database -> Task completion
+    """
+
+    def test_complete_phase2_sync_pipeline(self, tmp_path):
+        from backend.sources.browser_sheet.adapter import BrowserSpreadsheetSource
+        from backend.application.source_service import SourceService
+        from backend.automation.task_executor import TaskExecutor
+        from backend.workers.worker import Worker
+        from backend.repositories.message_repo import MessageRepository
+        from backend.repositories.followup_repo import FollowupRepository
+        from backend.repositories.sync_run_repo import SyncRunRepository
+        from backend.domain.models import SourceRow
+        from backend.domain.enums import RepliedStatus, SourceAccessStatus, WorkerStatus
+        from tests.fixtures.mock_browser import create_mock_session
+
+        db = _setup_db(tmp_path, "e2e_pipeline.db")
+        contact_repo = ContactRepository(db)
+        srec_repo = SourceRecordRepository(db)
+        task_repo = TaskRepository(db)
+        msg_repo = MessageRepository(db)
+        fu_repo = FollowupRepository(db)
+        evt_repo = EventRepository(db)
+        sync_repo = SyncRunRepository(db)
+        err_repo = ErrorRepository(db)
+
+        source_service = SourceService(
+            contact_repo=contact_repo,
+            source_record_repo=srec_repo,
+            task_repo=task_repo,
+            message_repo=msg_repo,
+            followup_repo=fu_repo,
+            event_repo=evt_repo,
+            sync_run_repo=sync_repo,
+        )
+
+        executor = TaskExecutor(
+            task_repo=task_repo,
+            event_repo=evt_repo,
+            error_repo=err_repo,
+            source_service=source_service,
+        )
+
+        session = create_mock_session("SESS-E2E")
+        session.start()
+
+        mock_driver = MagicMock()
+        mock_driver.check_access.return_value = SourceAccessStatus.ACCESSIBLE
+        mock_driver.open.return_value = True
+        mock_driver.read_sheet.return_value = [
+            SourceRow(
+                row_index=2,
+                name="Alice Test",
+                instagram_url="https://instagram.com/alice_test",
+                message="Hi Alice!",
+                replied_status=RepliedStatus.NO,
+                expected_followers=1000,
+            )
+        ]
+
+        source_adapter = BrowserSpreadsheetSource(
+            "https://docs.google.com/spreadsheets/d/test_e2e/edit",
+            driver=mock_driver,
+        )
+
+        worker = Worker(
+            worker_id="WKR-E2E",
+            worker_code="worker-e2e",
+            mode=WorkerMode.SINGLE_BROWSER,
+            task_repo=task_repo,
+            event_repo=evt_repo,
+            session=session,
+        )
+        worker.start()
+        assert worker.status == WorkerStatus.IDLE
+
+        task = Task(id="t-e2e-sync", contact_id="c-initial", type=TaskType.MESSAGE, status=TaskState.READY)
+        _create_task(db, task)
+
+        success = worker.process_next_task(executor=executor, adapter=source_adapter)
+        assert success is True
+
+        completed_task = task_repo.get_by_id("t-e2e-sync")
+        assert completed_task.status == TaskState.COMPLETED
+        assert completed_task.lock_token is None
+        assert worker.status == WorkerStatus.IDLE
+
+        # Contact persisted in database
+        matching = contact_repo.get_by_instagram_url("https://instagram.com/alice_test")
+        assert matching is not None
+        assert matching.name == "Alice Test"
+
+        worker.stop()
+        assert worker.status == WorkerStatus.STOPPED
+
+    def test_pipeline_crash_and_recovery_flow(self, tmp_path):
+        from backend.workers.worker import Worker
+        from backend.recovery.service import DefaultRecoveryService
+
+        db = _setup_db(tmp_path, "crash_recovery.db")
+        task_repo = TaskRepository(db)
+        event_repo = EventRepository(db)
+        error_repo = ErrorRepository(db)
+
+        task = Task(id="t-crash-flow", contact_id="c-crash", type=TaskType.MESSAGE, status=TaskState.READY)
+        _create_task(db, task)
+
+        worker = Worker(
+            worker_id="WKR-CRASH",
+            worker_code="worker-crash",
+            mode=WorkerMode.SINGLE_BROWSER,
+            task_repo=task_repo,
+            event_repo=event_repo,
+        )
+        worker.start()
+        claimed = worker.claim_task("t-crash-flow")
+        assert claimed is True
+
+        # Simulate browser crash during execution
+        count = task_repo.mark_running_as_interrupted()
+        assert count == 1
+        worker.stop()
+
+        interrupted = task_repo.get_by_id("t-crash-flow")
+        assert interrupted.status == TaskState.INTERRUPTED
+        assert interrupted.lock_token is None
+
+        # Recovery service safely requeues
+        recovery = DefaultRecoveryService(task_repo, event_repo, error_repo)
+        recovered = recovery.recover_interrupted_tasks(max_retries=3)
+        assert len(recovered) == 1
+        assert recovered[0].status == TaskState.QUEUED
+

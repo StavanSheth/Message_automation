@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Write-Back Failure Fixture</title>
+</head>
+<body>
+    <h1>Read-Only Sheet</h1>
+    <table id="spreadsheet">
+        <thead>
+            <tr>
+                <th>Name</th>
+                <th>Instagram URL</th>
+                <th>Message</th>
+                <th>Replied</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>Locked User</td>
+                <td>https://instagram.com/locked_user</td>
+                <td>Cannot change</td>
+                <td>NO</td>
+            </tr>
+        </tbody>
+    </table>
+    <script>
+        // Force reset any innerText modification
+        const cells = document.querySelectorAll('td');
+        cells.forEach(c => {
+            const original = c.innerText;
+            setInterval(() => {
+                if (c.innerText !== original) {
+                    c.innerText = original;
+                }
+            }, 100);
+        });
+    </script>
+</body>
+</html>

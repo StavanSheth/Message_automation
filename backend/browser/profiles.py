@@ -49,6 +49,9 @@ class BrowserProfileManager:
         self, profile_name: str, browser_type: BrowserType = BrowserType.CHROMIUM
     ) -> BrowserProfile:
         """Create or return an isolated browser profile."""
+        if ".." in profile_name or "/" in profile_name or "\\" in profile_name:
+            raise ValidationError(f"Profile path traversal detected: {profile_name}")
+
         clean_name = "".join(c for c in profile_name if c.isalnum() or c in ("-", "_")).strip()
         if not clean_name:
             raise ValidationError(f"Invalid profile name: '{profile_name}'")
@@ -81,6 +84,18 @@ class BrowserProfileManager:
         )
         self._profiles[profile_id] = profile
         return profile
+
+    def create_profile(
+        self, profile_name: str, browser_type: BrowserType = BrowserType.CHROMIUM
+    ) -> BrowserProfile:
+        return self.create_or_get_profile(profile_name, browser_type)
+
+    def delete_profile(self, profile_id: str) -> bool:
+        """Remove profile from tracking."""
+        if profile_id in self._profiles:
+            del self._profiles[profile_id]
+            return True
+        return False
 
     def get_profile(self, profile_id: str) -> Optional[BrowserProfile]:
         return self._profiles.get(profile_id)

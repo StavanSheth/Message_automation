@@ -134,6 +134,18 @@ class BrowserSessionInstance:
 
     def health_check(self) -> BrowserHealthResult:
         """Perform responsive health check."""
+        if self.status not in (SessionStatus.READY, SessionStatus.BUSY):
+            return BrowserHealthResult(
+                healthy=False,
+                browser_connected=False,
+                context_available=False,
+                page_available=False,
+                current_url=self.current_url,
+                latency_ms=0.0,
+                error_code=ErrorCode.SOURCE_UNAVAILABLE.value,
+                details=f"Session is in {self.status.value} state",
+            )
+
         start_time = time.perf_counter()
         connected = self.driver.is_connected()
         latency_ms = (time.perf_counter() - start_time) * 1000.0

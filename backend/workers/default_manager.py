@@ -1,11 +1,11 @@
 """Concrete worker manager implementing WorkerManager contract."""
 
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Any
 from backend.workers.manager import WorkerManager
 from backend.workers.worker import Worker
 from backend.workers.worker_health import WorkerHealthMonitor
 from backend.domain.models import WorkerRecord
-from backend.domain.enums import WorkerStatus, WorkerMode, EventCode, EventLevel
+from backend.domain.enums import WorkerStatus, WorkerMode, EventCode, EventLevel, TaskState
 from backend.browser.manager import BrowserManager
 from backend.repositories.task_repo import TaskRepository
 from backend.repositories.event_repo import EventRepository
@@ -19,7 +19,7 @@ logger = get_logger("default_worker_manager")
 class DefaultWorkerManager(WorkerManager):
     """
     Concrete WorkerManager that coordinates Worker instances with BrowserManager.
-    Enforces concurrency limits, handles crash recovery, and manages heartbeats.
+    Enforces concurrency limits, handles crash recovery, and manages worker lifecycles.
     """
 
     def __init__(
@@ -27,10 +27,12 @@ class DefaultWorkerManager(WorkerManager):
         task_repo: TaskRepository,
         event_repo: EventRepository,
         browser_manager: Optional[BrowserManager] = None,
+        task_executor: Optional[Any] = None,
     ):
         self.task_repo = task_repo
         self.event_repo = event_repo
         self.browser_manager = browser_manager
+        self.task_executor = task_executor
         self.settings = get_settings()
         self._workers: Dict[str, Worker] = {}
 
@@ -43,7 +45,7 @@ class DefaultWorkerManager(WorkerManager):
         )
 
     def start_worker(self, mode: WorkerMode) -> WorkerRecord:
-        """Launch a new worker with a browser session. Enforces max_workers."""
+        """Launch a new worker with an associated browser session. Enforces max_workers."""
         max_allowed = self.settings.max_workers
         if self.active_count >= max_allowed:
             raise RuntimeError(
@@ -75,7 +77,7 @@ class DefaultWorkerManager(WorkerManager):
         return worker.to_record()
 
     def stop_worker(self, worker_id: str) -> bool:
-        """Stop a specific worker and clean up its browser session."""
+        """Stop a specific worker, clean up its browser session, and release any tasks."""
         worker = self._workers.get(worker_id)
         if not worker:
             return False
@@ -89,6 +91,26 @@ class DefaultWorkerManager(WorkerManager):
 
         del self._workers[worker_id]
         return True
+
+    def process_tasks(self, max_tasks: Optional[int] = None, adapter: Optional[Any] = None) -> int:
+        """
+        Dispatch available tasks to idle workers.
+        Returns the number of tasks successfully processed.
+        """
+        if not self.task_executor:
+            logger.warning("No task_executor configured on DefaultWorkerManager")
+            return 0
+
+        processed = 0
+        for worker in list(self._workers.values()):
+            if max_tasks is not None and processed >= max_tasks:
+                break
+            if worker.status == WorkerStatus.IDLE:
+                success = worker.process_next_task(self.task_executor, adapter=adapter)
+                if success:
+                    processed += 1
+
+        return processed
 
     def list_workers(self) -> List[WorkerRecord]:
         return [w.to_record() for w in self._workers.values()]
@@ -108,10 +130,9 @@ class DefaultWorkerManager(WorkerManager):
             logger.warning(f"Worker {worker.worker_id} is stale, marking as crashed")
             worker.status = WorkerStatus.CRASHED
 
-            # Release any task the worker was holding
+            # Release any task the worker was holding and mark INTERRUPTED
             if worker.current_task_id:
                 try:
-                    from backend.domain.enums import TaskState
                     self.task_repo.update_state(
                         worker.current_task_id,
                         TaskState.INTERRUPTED,
@@ -133,6 +154,6 @@ class DefaultWorkerManager(WorkerManager):
         return recovered
 
     def shutdown_all(self) -> None:
-        """Stop all workers."""
+        """Stop all workers and release all resources."""
         for worker_id in list(self._workers.keys()):
             self.stop_worker(worker_id)

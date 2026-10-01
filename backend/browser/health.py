@@ -17,6 +17,12 @@ class BrowserHealthChecker:
     Evaluates responsiveness, active connection, and execution latency.
     """
 
+    def __init__(self, timeout_seconds: float = 5.0):
+        self.timeout_seconds = timeout_seconds
+
+    def check(self, session: BrowserSessionInstance) -> BrowserHealthResult:
+        return self.check_session(session, self.timeout_seconds)
+
     @staticmethod
     def check_session(session: BrowserSessionInstance, timeout_seconds: float = 5.0) -> BrowserHealthResult:
         """Evaluate health of an active browser session with timeout enforcement."""

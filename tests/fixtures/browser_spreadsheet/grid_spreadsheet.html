@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>ARIA Grid Spreadsheet Fixture</title>
+    <style>
+        [role="grid"] { display: table; width: 100%; border-collapse: collapse; }
+        [role="row"] { display: table-row; }
+        [role="columnheader"] { display: table-cell; font-weight: bold; background: #eee; padding: 6px; border: 1px solid #ccc; }
+        [role="gridcell"] { display: table-cell; padding: 6px; border: 1px solid #ccc; }
+    </style>
+</head>
+<body>
+    <h1>Virtual Grid Spreadsheet</h1>
+    <div id="docs-title-save-status">All changes saved in Drive</div>
+    <div role="grid">
+        <div role="row">
+            <div role="columnheader">Name</div>
+            <div role="columnheader">Instagram URL</div>
+            <div role="columnheader">Message</div>
+            <div role="columnheader">Replied</div>
+        </div>
+        <div role="row">
+            <div role="gridcell">Dave Miller</div>
+            <div role="gridcell">https://instagram.com/dave_m</div>
+            <div role="gridcell">Hi Dave!</div>
+            <div role="gridcell">NO</div>
+        </div>
+        <div role="row">
+            <div role="gridcell">Emma Watson</div>
+            <div role="gridcell">https://instagram.com/emma_w</div>
+            <div role="gridcell">Hello Emma!</div>
+            <div role="gridcell">YES</div>
+        </div>
+    </div>
+</body>
+</html>

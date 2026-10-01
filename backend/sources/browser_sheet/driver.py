@@ -65,6 +65,12 @@ class PlaywrightSpreadsheetDriver:
         self._col_to_canonical: Dict[int, str] = {}
         self._cached_headers: List[str] = []
 
+    def _invalidate_cache(self) -> None:
+        """Clear cached header and column mappings."""
+        self._cached_headers = []
+        self._canonical_to_col = {}
+        self._col_to_canonical = {}
+
     def check_access(self, url: str) -> SourceAccessStatus:
         """
         Navigate to URL and inspect response and DOM to identify accessibility:
@@ -87,7 +93,7 @@ class PlaywrightSpreadsheetDriver:
 
             current_page_url = self.session.navigate(url)
 
-            # 1. Detect login wall
+            # 1. Detect login wall via URL
             lower_url = current_page_url.lower()
             if any(term in lower_url for term in ("accounts.google.com/signin", "login.microsoftonline.com", "login.live.com", "auth")):
                 logger.info("Login required wall encountered for spreadsheet", url=url)
@@ -119,7 +125,6 @@ class PlaywrightSpreadsheetDriver:
             )
 
             if not table_check:
-                # Page loaded, but does not present a recognizable spreadsheet or table structure
                 logger.warning("Page loaded but no recognizable spreadsheet structure found", url=url)
                 return SourceAccessStatus.UNSUPPORTED_STRUCTURE
 
@@ -134,7 +139,10 @@ class PlaywrightSpreadsheetDriver:
             return SourceAccessStatus.SOURCE_UNAVAILABLE
 
     def open(self, url: str) -> bool:
-        """Open and verify access to spreadsheet URL."""
+        """Open and verify access to spreadsheet URL. Invalidate cache on URL change."""
+        if self._current_url != url:
+            self._invalidate_cache()
+
         status = self.check_access(url)
         if status != SourceAccessStatus.ACCESSIBLE:
             return False
@@ -145,6 +153,10 @@ class PlaywrightSpreadsheetDriver:
         """Read column header labels from spreadsheet."""
         if not self.session or not self.session.is_alive():
             raise SourceAccessError("Browser session not available", code=ErrorCode.SOURCE_UNAVAILABLE)
+
+        if self._current_url != url:
+            self._current_url = url
+            self._invalidate_cache()
 
         # Extract headers from table thead, first tr, or role='columnheader'
         headers = self.session.evaluate(
@@ -178,37 +190,42 @@ class PlaywrightSpreadsheetDriver:
         return self._cached_headers
 
     def read_rows(self, url: str) -> List[List[str]]:
-        """Read data rows from HTML spreadsheet."""
+        """Read data rows from HTML spreadsheet, supporting table and ARIA grid structures."""
         if not self.session or not self.session.is_alive():
             raise SourceAccessError("Browser session not available", code=ErrorCode.SOURCE_UNAVAILABLE)
+
+        if self._current_url != url:
+            self._current_url = url
+            self._invalidate_cache()
 
         raw_rows = self.session.evaluate(
             """() => {
                 const trs = Array.from(document.querySelectorAll('table tr'));
-                if (trs.length <= 1) {
-                    // Try role="row"
-                    const roleRows = Array.from(document.querySelectorAll('[role="row"]'));
-                    if (roleRows.length > 1) {
-                        return roleRows.slice(1).map(r => {
-                            const cells = r.querySelectorAll('[role="gridcell"]');
-                            return Array.from(cells).map(c => (c.innerText || '').trim());
-                        });
-                    }
-                    return [];
+                if (trs.length > 1) {
+                    // Standard table: slice off header row
+                    return trs.slice(1).map(tr => {
+                        const cells = tr.querySelectorAll('td');
+                        return Array.from(cells).map(c => (c.innerText || '').trim());
+                    });
                 }
 
-                // Slice off header row
-                return trs.slice(1).map(tr => {
-                    const cells = tr.querySelectorAll('td');
-                    return Array.from(cells).map(c => (c.innerText || '').trim());
-                });
+                // Try role="row" for grid-based spreadsheets (Google Sheets / Excel Online)
+                const roleRows = Array.from(document.querySelectorAll('[role="row"]'));
+                if (roleRows.length > 1) {
+                    return roleRows.slice(1).map(r => {
+                        const cells = r.querySelectorAll('[role="gridcell"]');
+                        return Array.from(cells).map(c => (c.innerText || '').trim());
+                    });
+                }
+
+                return [];
             }"""
         )
         return raw_rows or []
 
     def read_sheet(self, url: str) -> List[SourceRow]:
         """Read spreadsheet headers and rows, returning canonical SourceRow items."""
-        if not self._cached_headers:
+        if not self._cached_headers or self._current_url != url:
             self.read_headers(url)
 
         raw_rows = self.read_rows(url)
@@ -228,24 +245,33 @@ class PlaywrightSpreadsheetDriver:
 
     def read_cell(self, url: str, row_index: int, column_name: str) -> str:
         """Read value of a specific cell by row and column name."""
-        if not self._cached_headers:
+        if not self._cached_headers or self._current_url != url:
             self.read_headers(url)
 
         col_idx = self._canonical_to_col.get(column_name)
         if col_idx is None:
             raise ValidationError(f"Column '{column_name}' not found in spreadsheet")
 
-        # row_index is 1-based data index (row 2 is first data row)
         data_tr_idx = row_index - 2
         value = self.session.evaluate(
             """([trIdx, colIdx]) => {
                 const trs = document.querySelectorAll('table tr');
-                // plus 1 to skip header row
-                const tr = trs[trIdx + 1];
-                if (!tr) return '';
-                const cells = tr.querySelectorAll('td');
-                const cell = cells[colIdx];
-                return cell ? (cell.innerText || '').trim() : '';
+                if (trs.length > trIdx + 1) {
+                    const tr = trs[trIdx + 1];
+                    const cells = tr.querySelectorAll('td');
+                    const cell = cells[colIdx];
+                    return cell ? (cell.innerText || '').trim() : '';
+                }
+
+                const roleRows = document.querySelectorAll('[role="row"]');
+                if (roleRows.length > trIdx + 1) {
+                    const row = roleRows[trIdx + 1];
+                    const cells = row.querySelectorAll('[role="gridcell"]');
+                    const cell = cells[colIdx];
+                    return cell ? (cell.innerText || '').trim() : '';
+                }
+
+                return '';
             }""",
             [data_tr_idx, col_idx],
         )
@@ -265,7 +291,7 @@ class PlaywrightSpreadsheetDriver:
         if not self.session or not self.session.is_alive():
             raise SourceAccessError("Browser session not available for update", code=ErrorCode.SOURCE_UNAVAILABLE)
 
-        if not self._cached_headers:
+        if not self._cached_headers or self._current_url != url:
             self.read_headers(url)
 
         data_tr_idx = row_index - 2
@@ -280,19 +306,31 @@ class PlaywrightSpreadsheetDriver:
             # Step 1: Click the cell to enter edit mode
             click_result = self.session.evaluate(
                 """([trIdx, colIdx]) => {
+                    let cell = null;
                     const trs = document.querySelectorAll('table tr');
-                    const tr = trs[trIdx + 1];
-                    if (!tr) return { success: false, reason: 'row_not_found' };
-                    const cells = tr.querySelectorAll('td');
-                    const cell = cells[colIdx];
+                    if (trs.length > trIdx + 1) {
+                        const tr = trs[trIdx + 1];
+                        const cells = tr.querySelectorAll('td');
+                        cell = cells[colIdx];
+                    }
+
+                    if (!cell) {
+                        const roleRows = document.querySelectorAll('[role="row"]');
+                        if (roleRows.length > trIdx + 1) {
+                            const r = roleRows[trIdx + 1];
+                            const cells = r.querySelectorAll('[role="gridcell"]');
+                            cell = cells[colIdx];
+                        }
+                    }
+
                     if (!cell) return { success: false, reason: 'cell_not_found' };
 
-                    // Double-click to enter edit mode (Google Sheets pattern)
+                    // Focus and click to enter edit mode
                     cell.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
                     cell.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
                     cell.dispatchEvent(new MouseEvent('click', { bubbles: true }));
                     cell.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
-                    cell.focus();
+                    if (typeof cell.focus === 'function') cell.focus();
                     return { success: true };
                 }""",
                 [data_tr_idx, col_idx],
@@ -308,18 +346,22 @@ class PlaywrightSpreadsheetDriver:
             # Step 2: Clear existing content and type new value via keyboard simulation
             type_result = self.session.evaluate(
                 """([trIdx, colIdx, newVal]) => {
+                    let cell = null;
                     const trs = document.querySelectorAll('table tr');
-                    const tr = trs[trIdx + 1];
-                    if (!tr) return false;
-                    const cells = tr.querySelectorAll('td');
-                    const cell = cells[colIdx];
+                    if (trs.length > trIdx + 1) {
+                        cell = trs[trIdx + 1].querySelectorAll('td')[colIdx];
+                    }
+                    if (!cell) {
+                        const roleRows = document.querySelectorAll('[role="row"]');
+                        if (roleRows.length > trIdx + 1) {
+                            cell = roleRows[trIdx + 1].querySelectorAll('[role="gridcell"]')[colIdx];
+                        }
+                    }
                     if (!cell) return false;
 
-                    // Try contenteditable or input/textarea within the cell
                     const input = cell.querySelector('input, textarea');
                     const target = input || cell;
 
-                    // Select all and delete existing content
                     if (input) {
                         input.value = '';
                         input.focus();
@@ -327,7 +369,6 @@ class PlaywrightSpreadsheetDriver:
                         input.dispatchEvent(new Event('input', { bubbles: true }));
                         input.dispatchEvent(new Event('change', { bubbles: true }));
                     } else {
-                        // For contenteditable cells (Google Sheets pattern)
                         target.innerText = newVal;
                         target.dispatchEvent(new Event('input', { bubbles: true }));
                         target.dispatchEvent(new Event('change', { bubbles: true }));
@@ -336,7 +377,6 @@ class PlaywrightSpreadsheetDriver:
                     // Dispatch keyboard events to simulate Tab (commit edit)
                     target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', keyCode: 9, bubbles: true }));
                     target.dispatchEvent(new KeyboardEvent('keyup', { key: 'Tab', keyCode: 9, bubbles: true }));
-
                     return true;
                 }""",
                 [data_tr_idx, col_idx, target_val_str],
@@ -349,7 +389,7 @@ class PlaywrightSpreadsheetDriver:
                 )
 
             # Step 3: Wait for autosave/persistence
-            time.sleep(1.0)
+            time.sleep(0.5)
 
             # Step 4: Read back and verify persisted value
             readback = self.read_cell(url, row_index, field_name)
@@ -368,8 +408,8 @@ class PlaywrightSpreadsheetDriver:
         """
         Verify persistence state rather than returning True unconditionally.
         For Google Sheets: check save indicator.
+        For Excel Online: check save indicator.
         For other platforms: verify no unsaved changes banner.
-        Returns True only if persistence can be confirmed or no explicit unsaved state is detected.
         """
         if not self.session or not self.session.is_alive():
             return False
@@ -377,7 +417,6 @@ class PlaywrightSpreadsheetDriver:
         try:
             save_state = self.session.evaluate(
                 """() => {
-                    // Google Sheets: check for saving spinner or "All changes saved" text
                     const saveStatus = document.querySelector('#docs-title-save-status');
                     if (saveStatus) {
                         const text = (saveStatus.innerText || '').toLowerCase();
@@ -385,7 +424,6 @@ class PlaywrightSpreadsheetDriver:
                         if (text.includes('saved') || text.includes('drive')) return { saved: true, platform: 'google_sheets', status: text };
                     }
 
-                    // Excel Online: check for save indicator
                     const excelSave = document.querySelector('[data-automationid="StatusBarSaveStatus"]');
                     if (excelSave) {
                         const text = (excelSave.innerText || '').toLowerCase();
@@ -393,7 +431,6 @@ class PlaywrightSpreadsheetDriver:
                         return { saved: true, platform: 'excel_online', status: text };
                     }
 
-                    // For local/test HTML tables: no save mechanism needed, treat as saved
                     return { saved: true, platform: 'html_table', status: 'no_save_mechanism' };
                 }"""
             )
@@ -404,8 +441,7 @@ class PlaywrightSpreadsheetDriver:
                         f"Save not confirmed on {save_state.get('platform', 'unknown')}: "
                         f"{save_state.get('status', 'unknown')}"
                     )
-                    # Wait and retry once
-                    time.sleep(2.0)
+                    time.sleep(1.0)
                     return self.save()
                 return True
 
@@ -417,7 +453,4 @@ class PlaywrightSpreadsheetDriver:
 
     def close(self) -> None:
         self._current_url = None
-        self._cached_headers = []
-        self._canonical_to_col = {}
-        self._col_to_canonical = {}
-
+        self._invalidate_cache()

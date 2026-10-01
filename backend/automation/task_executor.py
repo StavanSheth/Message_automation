@@ -56,7 +56,7 @@ class TaskExecutor:
         self,
         task: Task,
         context: ExecutionContext,
-        adapter: SourceAdapter,
+        adapter: Optional[SourceAdapter] = None,
         session: Optional[BrowserSessionInstance] = None,
     ) -> bool:
         """
@@ -102,6 +102,7 @@ class TaskExecutor:
             correlation_id=context.correlation_id,
         )
 
+        source_ident = str(adapter.source_identifier) if adapter else "default_source"
         self.event_repo.record(
             event_code=EventCode.TASK_EXECUTION_STARTED,
             category="automation",
@@ -113,12 +114,13 @@ class TaskExecutor:
                 "worker_id": context.worker_id,
                 "session_id": context.session_id,
                 "correlation_id": context.correlation_id,
-                "source_identifier": adapter.source_identifier,
+                "source_identifier": source_ident,
                 "lock_token": current.lock_token,
                 "attempt_count": current.attempt_count,
             },
         )
 
+        completed_successfully = False
         try:
             # Execute synchronization via SourceService
             if not self.source_service:
@@ -127,16 +129,25 @@ class TaskExecutor:
                     message="SourceService is required for task execution",
                 )
 
+            if not adapter:
+                raise AutomationError(
+                    code=ErrorCode.SOURCE_UNAVAILABLE,
+                    message="SourceAdapter is required for source sync execution",
+                )
+
             sync_run = self.source_service.sync_source(adapter)
+
+            # Verify ownership has not changed before completing
+            verify = self.task_repo.get_by_id(task.id)
+            if not verify or verify.status != TaskState.RUNNING or verify.lock_token != current.lock_token:
+                logger.error(f"Task {task.id} lost ownership or was interrupted during execution")
+                return False
 
             # Transition to COMPLETED
             self.task_repo.update_state(
                 task.id, TaskState.COMPLETED, worker_id=context.worker_id
             )
-
-            # Release lock
-            if current.lock_token:
-                self.task_repo.release_task(task.id, current.lock_token)
+            completed_successfully = True
 
             self.event_repo.record(
                 event_code=EventCode.TASK_EXECUTION_COMPLETED,
@@ -189,6 +200,15 @@ class TaskExecutor:
             )
             return False
 
+        finally:
+            # Release lock in all cases if lock is still held
+            try:
+                latest = self.task_repo.get_by_id(task.id)
+                if latest and latest.lock_token == current.lock_token:
+                    self.task_repo.release_task(task.id, current.lock_token)
+            except Exception as e:
+                logger.warning(f"Failed to release task {task.id} lock in finally block: {e}")
+
     def _handle_failure(
         self,
         task: Task,
@@ -217,6 +237,7 @@ class TaskExecutor:
                 next_state,
                 worker_id=context.worker_id,
                 last_error_id=error_rec.id,
+                enforce_transition=False,
             )
         except TaskStateError as e:
             logger.error(f"Could not transition task {task.id} to {next_state.value}: {e}")
@@ -236,6 +257,9 @@ class TaskExecutor:
             entity_id=task.id,
             payload={
                 "run_id": context.run_id,
+                "worker_id": context.worker_id,
+                "session_id": context.session_id,
+                "correlation_id": context.correlation_id,
                 "error_code": error_code.value,
                 "error_message": message,
                 "retryable": retryable,
