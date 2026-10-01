@@ -1,0 +1,386 @@
+"""Instagram Automation Service orchestrating the complete Instagram messaging workflow."""
+
+from datetime import datetime, timezone, timedelta
+from typing import Optional, Dict, Any
+
+from backend.domain.models import Task, Contact, Message, ErrorRecord, utc_now_iso
+from backend.domain.enums import (
+    TaskState,
+    TaskType,
+    MessageState,
+    FollowupStatus,
+    ErrorCode,
+    ErrorSeverity,
+    EventCode,
+    EventLevel,
+    VerificationDecision,
+)
+from backend.domain.errors import AutomationError
+from backend.browser.session import BrowserSessionInstance
+from backend.browser.exceptions import BrowserCrashError, BrowserTimeoutError
+from backend.browser.instagram.navigator import InstagramNavigator, InstagramPageStatus
+from backend.browser.instagram.profile_reader import InstagramProfileReader
+from backend.browser.instagram.profile_verifier import InstagramProfileVerifier
+from backend.browser.instagram.message_composer import InstagramMessageComposer
+from backend.browser.instagram.message_sender import InstagramMessageSender
+from backend.browser.instagram.send_verifier import InstagramSendVerifier
+from backend.repositories.task_repo import TaskRepository
+from backend.repositories.contact_repo import ContactRepository
+from backend.repositories.message_repo import MessageRepository
+from backend.repositories.followup_repo import FollowupRepository
+from backend.repositories.event_repo import EventRepository
+from backend.repositories.error_repo import ErrorRepository
+from backend.repositories.verification_result_repo import VerificationResultRepository
+from backend.config.settings import AppSettings, get_settings
+from backend.events.correlation import generate_id
+from backend.events.logger import get_logger
+
+logger = get_logger("instagram_automation_service")
+
+
+class InstagramAutomationService:
+    """
+    Coordinates profile navigation, profile verification, message composition,
+    submission, post-send verification, state persistence, error recording, and follow-up scheduling.
+    """
+
+    def __init__(
+        self,
+        task_repo: TaskRepository,
+        contact_repo: ContactRepository,
+        message_repo: MessageRepository,
+        followup_repo: FollowupRepository,
+        event_repo: EventRepository,
+        error_repo: ErrorRepository,
+        verification_repo: Optional[VerificationResultRepository] = None,
+        settings: Optional[AppSettings] = None,
+        navigator: Optional[InstagramNavigator] = None,
+        reader: Optional[InstagramProfileReader] = None,
+        verifier: Optional[InstagramProfileVerifier] = None,
+        composer: Optional[InstagramMessageComposer] = None,
+        sender: Optional[InstagramMessageSender] = None,
+        send_verifier: Optional[InstagramSendVerifier] = None,
+    ):
+        self.task_repo = task_repo
+        self.contact_repo = contact_repo
+        self.message_repo = message_repo
+        self.followup_repo = followup_repo
+        self.event_repo = event_repo
+        self.error_repo = error_repo
+        self.verification_repo = verification_repo
+        self.settings = settings or get_settings()
+
+        self.navigator = navigator or InstagramNavigator()
+        self.reader = reader or InstagramProfileReader()
+        self.verifier = verifier or InstagramProfileVerifier(
+            verification_repo=self.verification_repo,
+            threshold=self.settings.verification_threshold,
+        )
+        self.composer = composer or InstagramMessageComposer()
+        self.sender = sender or InstagramMessageSender()
+        self.send_verifier = send_verifier or InstagramSendVerifier()
+
+    def execute_messaging_task(
+        self,
+        task: Task,
+        session: BrowserSessionInstance,
+        worker_id: Optional[str] = None,
+        correlation_id: Optional[str] = None,
+    ) -> bool:
+        """
+        Execute an initial message or follow-up messaging task.
+        State progression:
+        READY -> VALIDATING -> RUNNING -> SENDING -> VERIFYING -> COMPLETED
+        """
+        corr_id = correlation_id or generate_id("CORR")
+        now_iso = utc_now_iso()
+
+        # ── 1. Validate Task and Contact ──────────────────────────
+        current_task = self.task_repo.get_by_id(task.id)
+        if not current_task:
+            logger.error(f"Task {task.id} not found")
+            return False
+
+        contact = self.contact_repo.get_by_id(current_task.contact_id)
+        if not contact:
+            self._record_error(current_task, ErrorCode.INVALID_DATA, "Contact not found", retryable=False, worker_id=worker_id)
+            self.task_repo.update_state(current_task.id, TaskState.FAILED, worker_id=worker_id)
+            return False
+
+        # Guard: Check replied state
+        if contact.replied_status.value == "YES":
+            logger.info(f"Contact {contact.id} already replied; skipping task {task.id}")
+            self.followup_repo.cancel_pending_for_contact(contact.id, cancel_reason="REPLIED")
+            self.task_repo.update_state(current_task.id, TaskState.SKIPPED, worker_id=worker_id)
+            return True
+
+        # Fetch message record to send
+        message_record = self._get_or_create_message_record(current_task, contact)
+        if not message_record:
+            self._record_error(current_task, ErrorCode.INVALID_DATA, "No message body found for task", retryable=False, worker_id=worker_id)
+            self.task_repo.update_state(current_task.id, TaskState.FAILED, worker_id=worker_id)
+            return False
+
+        # ── 2. Transition Task to VALIDATING ─────────────────────
+        try:
+            self.task_repo.update_state(current_task.id, TaskState.VALIDATING, worker_id=worker_id)
+        except Exception as e:
+            logger.warning(f"Could not transition task to VALIDATING: {e}")
+
+        # ── 3. Profile Navigation ────────────────────────────────
+        nav_result = self.navigator.navigate_to_profile(session, contact.instagram_url)
+        page_status = nav_result.get("status", InstagramPageStatus.AVAILABLE)
+
+        if page_status == InstagramPageStatus.LOGIN_REQUIRED:
+            self._record_error(
+                current_task, ErrorCode.SESSION_EXPIRED, "Instagram login required", retryable=False, worker_id=worker_id
+            )
+            self.event_repo.record(
+                event_code=EventCode.LOGIN_REQUIRED,
+                category="worker",
+                level=EventLevel.CRITICAL,
+                entity_type="task",
+                entity_id=current_task.id,
+                payload={"worker_id": worker_id, "url": nav_result.get("url")},
+            )
+            self.task_repo.update_state(current_task.id, TaskState.MANUAL_REVIEW, worker_id=worker_id)
+            return False
+
+        if page_status == InstagramPageStatus.NOT_FOUND:
+            self._record_error(
+                current_task, ErrorCode.PROFILE_NOT_FOUND, "Target profile not found on Instagram", retryable=False, worker_id=worker_id
+            )
+            self.task_repo.update_state(current_task.id, TaskState.SKIPPED, worker_id=worker_id)
+            return False
+
+        if page_status == InstagramPageStatus.RESTRICTED:
+            self._record_error(
+                current_task, ErrorCode.ACCESS_PROHIBITED, "Target profile is restricted/unavailable", retryable=False, worker_id=worker_id
+            )
+            self.task_repo.update_state(current_task.id, TaskState.MANUAL_REVIEW, worker_id=worker_id)
+            return False
+
+        if page_status == InstagramPageStatus.UNAVAILABLE:
+            self._record_error(
+                current_task, ErrorCode.TIMEOUT, "Navigation to profile timed out or failed", retryable=True, worker_id=worker_id
+            )
+            self.task_repo.update_state(current_task.id, TaskState.RETRY_WAIT, worker_id=worker_id)
+            return False
+
+        # ── 4. Profile Extraction & Verification ──────────────────
+        observed = self.reader.extract_profile(session)
+        decision, confidence, signals, _ = self.verifier.verify_profile(
+            contact=contact,
+            observed=observed,
+            task_id=current_task.id,
+        )
+
+        if decision == VerificationDecision.MISMATCH:
+            self._record_error(
+                current_task, ErrorCode.PROFILE_MISMATCH, "Profile identity mismatch detected", retryable=False, worker_id=worker_id
+            )
+            self.task_repo.update_state(current_task.id, TaskState.MANUAL_REVIEW, worker_id=worker_id)
+            return False
+
+        if decision == VerificationDecision.NOT_FOUND:
+            self._record_error(
+                current_task, ErrorCode.PROFILE_NOT_FOUND, "Profile details missing or not found", retryable=False, worker_id=worker_id
+            )
+            self.task_repo.update_state(current_task.id, TaskState.SKIPPED, worker_id=worker_id)
+            return False
+
+        send_allowed = self.verifier.is_send_allowed(decision, execution_mode=self.settings.execution_mode)
+        if not send_allowed:
+            logger.warning(f"Verification decision '{decision.value}' requires manual review for task {task.id}")
+            self.message_repo.update_status(message_record.id, MessageState.AWAITING_APPROVAL)
+            self.task_repo.update_state(current_task.id, TaskState.MANUAL_REVIEW, worker_id=worker_id)
+            return False
+
+        # ── 5. Check DM Availability ─────────────────────────────
+        if not observed.get("can_message", False):
+            # Check if private and not messageable
+            logger.warning(f"Direct messaging unavailable for contact {contact.id}")
+            self._record_error(
+                current_task, ErrorCode.DM_NOT_AVAILABLE, "DM action not available on profile", retryable=False, worker_id=worker_id
+            )
+            self.message_repo.update_status(message_record.id, MessageState.SKIPPED)
+            self.task_repo.update_state(current_task.id, TaskState.SKIPPED, worker_id=worker_id)
+            return False
+
+        # ── 6. Open Dialog & Compose Message ──────────────────────
+        self.task_repo.update_state(current_task.id, TaskState.RUNNING, worker_id=worker_id)
+        self.message_repo.update_status(message_record.id, MessageState.SENDING)
+
+        dialog_res = self.composer.open_message_dialog(session)
+        if not dialog_res.get("success"):
+            self._record_error(
+                current_task, ErrorCode.DM_NOT_AVAILABLE, "Failed to open message dialog", retryable=True, worker_id=worker_id
+            )
+            self.message_repo.update_status(message_record.id, MessageState.FAILED)
+            self.task_repo.update_state(current_task.id, TaskState.RETRY_WAIT, worker_id=worker_id)
+            return False
+
+        compose_res = self.composer.compose_message(session, message_record.body)
+        if not compose_res.get("success"):
+            self._record_error(
+                current_task, ErrorCode.MESSAGE_SEND_FAILED, "Failed to enter message content", retryable=True, worker_id=worker_id
+            )
+            self.message_repo.update_status(message_record.id, MessageState.FAILED)
+            self.task_repo.update_state(current_task.id, TaskState.RETRY_WAIT, worker_id=worker_id)
+            return False
+
+        # ── 7. Submit / Send Message ──────────────────────────────
+        self.event_repo.record(
+            event_code=EventCode.MESSAGE_ATTEMPTED,
+            category="messaging",
+            level=EventLevel.INFO,
+            entity_type="message",
+            entity_id=message_record.id,
+            payload={"task_id": current_task.id, "contact_id": contact.id},
+        )
+
+        send_res = self.sender.submit_send(session)
+        if not send_res.get("submitted"):
+            err_code = send_res.get("error_code") or ErrorCode.MESSAGE_SEND_FAILED
+            self._record_error(
+                current_task, err_code, send_res.get("reason", "Send failed"), retryable=False, worker_id=worker_id
+            )
+            self.message_repo.update_status(message_record.id, MessageState.FAILED)
+            self.task_repo.update_state(current_task.id, TaskState.FAILED, worker_id=worker_id)
+            return False
+
+        # ── 8. Send Verification ──────────────────────────────────
+        verification_res = self.send_verifier.verify_sent_message(session, message_record.body, contact.username)
+
+        if verification_res.get("confirmed"):
+            # Confirmed sent
+            now_sent = utc_now_iso()
+            self.message_repo.update_status(
+                message_record.id,
+                MessageState.SENT,
+                confirmed_at=now_sent,
+                result_code="SUCCESS",
+            )
+            self.task_repo.update_state(current_task.id, TaskState.COMPLETED, worker_id=worker_id)
+
+            self.event_repo.record(
+                event_code=EventCode.MESSAGE_CONFIRMED,
+                category="messaging",
+                level=EventLevel.INFO,
+                entity_type="message",
+                entity_id=message_record.id,
+                payload={"task_id": current_task.id, "contact_id": contact.id, "confirmed_at": now_sent},
+            )
+
+            # Schedule follow-up after prerequisite message confirms
+            self._schedule_next_followup(current_task, contact, now_sent)
+            return True
+        else:
+            # Ambiguous or failed delivery
+            msg_state = verification_res.get("message_state", MessageState.RECONCILIATION)
+            tsk_state = verification_res.get("task_state", TaskState.MANUAL_REVIEW)
+
+            self.message_repo.update_status(message_record.id, msg_state, result_code="AMBIGUOUS")
+            self.task_repo.update_state(current_task.id, tsk_state, worker_id=worker_id)
+
+            self._record_error(
+                current_task,
+                ErrorCode.UNKNOWN_RESULT,
+                f"Send outcome unconfirmed: {verification_res.get('reason')}",
+                retryable=False,
+                worker_id=worker_id,
+            )
+            return False
+
+    def _schedule_next_followup(self, task: Task, contact: Contact, sent_at_iso: str) -> None:
+        """
+        Schedule the next follow-up upon confirmation of prior message send:
+        - If task was MESSAGE (initial) -> schedule FOLLOW_UP_1
+        - If task was FOLLOW_UP_1 -> schedule FOLLOW_UP_2
+        """
+        try:
+            sent_dt = datetime.fromisoformat(sent_at_iso.replace("Z", "+00:00"))
+        except Exception:
+            sent_dt = datetime.now(timezone.utc)
+
+        if task.type == TaskType.MESSAGE:
+            fu1 = self.followup_repo.get_by_contact_and_sequence(contact.id, 1)
+            if fu1 and fu1.status == FollowupStatus.PENDING:
+                delay = fu1.delay_seconds or self.settings.followup_1_delay
+                sched_dt = sent_dt + timedelta(seconds=delay)
+                sched_iso = sched_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+                self.followup_repo.schedule(fu1.id, sched_iso)
+                logger.info(f"Scheduled follow-up 1 for contact {contact.id} at {sched_iso}")
+
+        elif task.type == TaskType.FOLLOW_UP_1:
+            fu2 = self.followup_repo.get_by_contact_and_sequence(contact.id, 2)
+            if fu2 and fu2.status == FollowupStatus.PENDING:
+                delay = fu2.delay_seconds or self.settings.followup_2_delay
+                sched_dt = sent_dt + timedelta(seconds=delay)
+                sched_iso = sched_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+                self.followup_repo.schedule(fu2.id, sched_iso)
+                logger.info(f"Scheduled follow-up 2 for contact {contact.id} at {sched_iso}")
+
+    def _get_or_create_message_record(self, task: Task, contact: Contact) -> Optional[Message]:
+        """Fetch the Message record associated with this task or create for follow-up."""
+        existing = self.message_repo.get_by_task_id(task.id)
+        if existing:
+            return existing
+
+        # If this is a follow-up task, get body from Followup record
+        if task.type in (TaskType.FOLLOW_UP_1, TaskType.FOLLOW_UP_2):
+            seq = 1 if task.type == TaskType.FOLLOW_UP_1 else 2
+            fu = self.followup_repo.get_by_contact_and_sequence(contact.id, seq)
+            if fu:
+                msg = Message(
+                    id=generate_id("MSG"),
+                    contact_id=contact.id,
+                    task_id=task.id,
+                    sequence=seq,
+                    body=fu.message,
+                    status=MessageState.PENDING,
+                    created_at=utc_now_iso(),
+                    updated_at=utc_now_iso(),
+                )
+                return self.message_repo.create(msg)
+
+        # Fallback to first message for contact
+        contact_messages = self.message_repo.list_by_contact(contact.id)
+        return contact_messages[0] if contact_messages else None
+
+    def _record_error(
+        self,
+        task: Task,
+        code: ErrorCode,
+        message: str,
+        retryable: bool,
+        worker_id: Optional[str] = None,
+    ) -> None:
+        """Persist error record and emit error event."""
+        err = ErrorRecord(
+            id=generate_id("ERR"),
+            code=code,
+            message=message,
+            severity=ErrorSeverity.MEDIUM if retryable else ErrorSeverity.HIGH,
+            retryable=retryable,
+            attempt=task.attempt_count,
+            task_id=task.id,
+        )
+        try:
+            self.error_repo.record(err)
+        except Exception as e:
+            logger.error(f"Failed to record error: {e}")
+
+        self.event_repo.record(
+            event_code=EventCode.TASK_EXECUTION_FAILED,
+            category="messaging",
+            level=EventLevel.ERROR,
+            entity_type="task",
+            entity_id=task.id,
+            payload={
+                "error_code": code.value,
+                "error_message": message,
+                "retryable": retryable,
+                "worker_id": worker_id,
+            },
+        )

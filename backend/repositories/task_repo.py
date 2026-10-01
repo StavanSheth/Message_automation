@@ -11,10 +11,11 @@ from backend.domain.errors import DuplicateTaskError, TaskStateError
 # Valid state transitions from Document 3
 VALID_TRANSITIONS: dict[TaskState, Set[TaskState]] = {
     TaskState.CREATED: {TaskState.VALIDATING, TaskState.CANCELLED},
-    TaskState.VALIDATING: {TaskState.QUEUED, TaskState.SKIPPED, TaskState.CANCELLED, TaskState.FAILED},
+    TaskState.VALIDATING: {TaskState.QUEUED, TaskState.READY, TaskState.RUNNING, TaskState.SKIPPED, TaskState.CANCELLED, TaskState.FAILED, TaskState.MANUAL_REVIEW, TaskState.RETRY_WAIT},
     TaskState.QUEUED: {TaskState.READY, TaskState.CANCELLED},
-    TaskState.READY: {TaskState.RUNNING, TaskState.CANCELLED},
+    TaskState.READY: {TaskState.RUNNING, TaskState.VALIDATING, TaskState.CANCELLED},
     TaskState.RUNNING: {
+        TaskState.VALIDATING,
         TaskState.COMPLETED,
         TaskState.RETRY_WAIT,
         TaskState.MANUAL_REVIEW,
@@ -150,7 +151,7 @@ class TaskRepository(BaseRepository):
                 raise TaskStateError(f"Task with id '{task_id}' not found.", task_id=task_id)
 
             current_state = TaskState(row["status"])
-            if enforce_transition:
+            if enforce_transition and new_state != current_state:
                 allowed = VALID_TRANSITIONS.get(current_state, set())
                 if new_state not in allowed:
                     raise TaskStateError(
@@ -247,6 +248,21 @@ class TaskRepository(BaseRepository):
         with self.db.transaction() as conn:
             cursor = conn.execute(query, (now_iso, task_id, lock_token))
             return cursor.rowcount > 0
+
+    def unlock_task(self, task_id: str) -> bool:
+        """Unconditionally release a task lock (e.g. on worker crash recovery)."""
+        now_iso = utc_now_iso()
+        query = """
+            UPDATE tasks SET
+                lock_token = NULL,
+                locked_at = NULL,
+                updated_at = ?
+            WHERE id = ?;
+        """
+        with self.db.transaction() as conn:
+            cursor = conn.execute(query, (now_iso, task_id))
+            return cursor.rowcount > 0
+
 
     def list_ready(self, limit: int = 50) -> List[Task]:
         """List tasks that are ready for execution ordered by priority DESC and scheduled_at ASC."""

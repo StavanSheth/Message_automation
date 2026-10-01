@@ -248,21 +248,25 @@ class SourceService:
                 payload={"contact_id": contact.id, "type": TaskType.MESSAGE.value},
             )
         except DuplicateTaskError:
-            pass  # Task already exists for this contact
+            existing_task = self.task_repo.get_by_contact_and_type(contact.id, TaskType.MESSAGE, sequence=0)
+            if existing_task:
+                task = existing_task
 
-        # Create Initial Message
-        msg_id = generate_id("MSG")
-        msg = Message(
-            id=msg_id,
-            contact_id=contact.id,
-            task_id=task.id,
-            sequence=0,
-            body=row.message,
-            status=MessageState.PENDING,
-            created_at=now_iso,
-            updated_at=now_iso,
-        )
-        self.message_repo.create(msg)
+        # Create Initial Message (if not already existing for this task)
+        existing_msg = self.message_repo.get_by_task_id(task.id)
+        if not existing_msg:
+            msg_id = generate_id("MSG")
+            msg = Message(
+                id=msg_id,
+                contact_id=contact.id,
+                task_id=task.id,
+                sequence=0,
+                body=row.message,
+                status=MessageState.PENDING,
+                created_at=now_iso,
+                updated_at=now_iso,
+            )
+            self.message_repo.create(msg)
 
         # Create Follow-up 1 if configured
         settings = get_settings()

@@ -80,6 +80,10 @@ class WorkerRepository(BaseRepository):
             cursor = conn.execute("SELECT * FROM workers;")
         return [self._row_to_worker(row) for row in cursor.fetchall()]
 
+    def list_all(self) -> List[WorkerRecord]:
+        """Alias for list_workers()."""
+        return self.list_workers()
+
     def delete(self, worker_id: str) -> bool:
         with self.db.transaction() as conn:
             cursor = conn.execute("DELETE FROM workers WHERE id = ?;", (worker_id,))

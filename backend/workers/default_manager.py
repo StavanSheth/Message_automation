@@ -28,11 +28,13 @@ class DefaultWorkerManager(WorkerManager):
         event_repo: EventRepository,
         browser_manager: Optional[BrowserManager] = None,
         task_executor: Optional[Any] = None,
+        worker_repo: Optional[Any] = None,
     ):
         self.task_repo = task_repo
         self.event_repo = event_repo
         self.browser_manager = browser_manager
         self.task_executor = task_executor
+        self.worker_repo = worker_repo
         self.settings = get_settings()
         self._workers: Dict[str, Worker] = {}
 
@@ -100,6 +102,7 @@ class DefaultWorkerManager(WorkerManager):
             session=session,
             heartbeat_interval=self.settings.worker_heartbeat_interval,
             stale_timeout=self.settings.worker_stale_timeout,
+            worker_repo=self.worker_repo,
         )
         worker.start()
         self._workers[worker_id] = worker
@@ -152,12 +155,20 @@ class DefaultWorkerManager(WorkerManager):
         return self._workers.get(worker_id)
 
     def recover_stale_workers(self) -> int:
-        """Find and recover stale workers by marking them crashed and stopping."""
+        """Find and recover stale workers (in-memory and persisted) by marking them crashed, releasing locks, and cleaning up."""
+        from datetime import datetime, timezone
+        recovered_ids = set()
+
+        # 1. Recover in-memory workers
         stale = WorkerHealthMonitor.find_stale_workers(list(self._workers.values()))
-        recovered = 0
         for worker in stale:
             logger.warning(f"Worker {worker.worker_id} is stale, marking as crashed")
             worker.status = WorkerStatus.CRASHED
+            if self.worker_repo:
+                try:
+                    self.worker_repo.update(worker.to_record())
+                except Exception as e:
+                    logger.warning(f"Failed to update worker {worker.worker_id} in repo: {e}")
 
             # Release any task the worker was holding and mark INTERRUPTED
             if worker.current_task_id:
@@ -167,6 +178,7 @@ class DefaultWorkerManager(WorkerManager):
                         TaskState.INTERRUPTED,
                         enforce_transition=False,
                     )
+                    self.task_repo.unlock_task(worker.current_task_id)
                 except Exception as e:
                     logger.warning(f"Could not interrupt task {worker.current_task_id}: {e}")
 
@@ -179,8 +191,50 @@ class DefaultWorkerManager(WorkerManager):
                 payload={"reason": "heartbeat_stale", "task_id": worker.current_task_id},
             )
             self.stop_worker(worker.worker_id)
-            recovered += 1
-        return recovered
+            recovered_ids.add(worker.worker_id)
+
+        # 2. Recover persisted workers in DB that are not in memory or died unexpectedly
+        if self.worker_repo:
+            try:
+                all_persisted = self.worker_repo.list_all()
+                now = datetime.now(timezone.utc)
+                stale_threshold = getattr(self.settings, "stale_threshold_seconds", 60)
+                for prec in all_persisted:
+                    if prec.id in recovered_ids:
+                        continue
+                    if prec.status in (WorkerStatus.IDLE, WorkerStatus.BUSY):
+                        if prec.last_heartbeat:
+                            try:
+                                hb_dt = datetime.fromisoformat(prec.last_heartbeat.replace("Z", "+00:00"))
+                                if (now - hb_dt).total_seconds() > stale_threshold:
+                                    logger.warning(f"Persisted worker {prec.id} is stale in DB, marking crashed")
+                                    prec.status = WorkerStatus.CRASHED
+                                    self.worker_repo.update(prec)
+                                    if prec.current_task_id:
+                                        self.task_repo.update_state(
+                                            prec.current_task_id,
+                                            TaskState.INTERRUPTED,
+                                            enforce_transition=False,
+                                        )
+                                        self.task_repo.unlock_task(prec.current_task_id)
+                                    self.event_repo.record(
+                                        event_code=EventCode.WORKER_CRASHED,
+                                        category="worker",
+                                        level=EventLevel.ERROR,
+                                        entity_type="worker",
+                                        entity_id=prec.id,
+                                        payload={"reason": "heartbeat_stale_db", "task_id": prec.current_task_id},
+                                    )
+                                    if prec.id in self._workers:
+                                        self.stop_worker(prec.id)
+                                    recovered_ids.add(prec.id)
+                            except Exception as e:
+                                logger.warning(f"Error checking heartbeat for worker {prec.id}: {e}")
+            except Exception as e:
+                logger.warning(f"Error scanning persisted workers for staleness: {e}")
+
+        return len(recovered_ids)
+
 
     def shutdown_all(self) -> None:
         """Stop all workers and release all resources."""

@@ -4,6 +4,7 @@ from typing import Optional, Dict, Any
 from backend.domain.models import Task, ErrorRecord, utc_now_iso
 from backend.domain.enums import (
     TaskState,
+    TaskType,
     ErrorCode,
     EventCode,
     EventLevel,
@@ -24,6 +25,7 @@ from backend.application.source_service import SourceService
 from backend.repositories.task_repo import TaskRepository
 from backend.repositories.event_repo import EventRepository
 from backend.repositories.error_repo import ErrorRepository
+from backend.browser.instagram.automation_service import InstagramAutomationService
 from backend.events.correlation import generate_id
 from backend.events.logger import get_logger
 
@@ -32,12 +34,9 @@ logger = get_logger("task_executor")
 
 class TaskExecutor:
     """
-    Executes browser-backed source synchronization and foundation tasks.
-    Enforces Phase 2 boundaries: does NOT perform Instagram messaging.
-
-    CRITICAL: TaskExecutor NEVER transitions a task to RUNNING directly.
-    Tasks must be atomically claimed via TaskRepository.claim_task() BEFORE
-    being passed to execute_source_sync(). The executor verifies claim state.
+    Executes browser-backed automation tasks including source sync,
+    Instagram messaging, and follow-up executions.
+    Dispatches according to TaskType.
     """
 
     def __init__(
@@ -46,11 +45,128 @@ class TaskExecutor:
         event_repo: EventRepository,
         error_repo: ErrorRepository,
         source_service: Optional[SourceService] = None,
+        instagram_service: Optional[InstagramAutomationService] = None,
+        max_retries: int = 3,
     ):
         self.task_repo = task_repo
         self.event_repo = event_repo
         self.error_repo = error_repo
         self.source_service = source_service
+        self.instagram_service = instagram_service
+        self.max_retries = max_retries
+
+    def execute_task(
+        self,
+        task: Task,
+        context: ExecutionContext,
+        session: Optional[BrowserSessionInstance] = None,
+        adapter: Optional[SourceAdapter] = None,
+    ) -> bool:
+        """
+        Primary execution dispatch method based on TaskType:
+        - TaskType.MESSAGE -> execute_instagram_message
+        - TaskType.FOLLOW_UP_1 -> execute_instagram_message
+        - TaskType.FOLLOW_UP_2 -> execute_instagram_message
+        - Default -> execute_source_sync
+        """
+        if task.type in (TaskType.MESSAGE, TaskType.FOLLOW_UP_1, TaskType.FOLLOW_UP_2):
+            if self.instagram_service:
+                return self.execute_instagram_message(task, context, session)
+        return self.execute_source_sync(task, context, adapter, session)
+
+    def execute_instagram_message(
+        self,
+        task: Task,
+        context: ExecutionContext,
+        session: Optional[BrowserSessionInstance] = None,
+    ) -> bool:
+        """
+        Execute an Instagram message or follow-up task.
+        Verifies atomic claim state, worker ownership, and delegates to InstagramAutomationService.
+        """
+        context.task_id = task.id
+        if session:
+            context.session_id = session.session_id
+
+        # ── Guard: task must already be claimed (RUNNING + lock_token) ──
+        current = self.task_repo.get_by_id(task.id)
+        if not current:
+            logger.error(f"Task {task.id} not found in repository")
+            return False
+
+        if current.status != TaskState.RUNNING:
+            logger.error(
+                f"Task {task.id} is {current.status.value}, not RUNNING. "
+                "Tasks must be claimed via claim_task() before execution."
+            )
+            return False
+
+        if not current.lock_token:
+            logger.error(f"Task {task.id} has no lock_token. Tasks must be claimed before execution.")
+            return False
+
+        if context.worker_id and current.worker_id != context.worker_id:
+            logger.error(
+                f"Task {task.id} claimed by worker {current.worker_id}, "
+                f"but execution requested by {context.worker_id}."
+            )
+            return False
+
+        if not self.instagram_service:
+            logger.error("InstagramAutomationService is required for messaging task execution")
+            self._handle_failure(current, context, ErrorCode.INTERNAL_ERROR, "Instagram service not configured", retryable=False)
+            return False
+
+        if not session or not session.is_alive():
+            logger.error(f"Session not available for task {task.id}")
+            self._handle_failure(current, context, ErrorCode.BROWSER_CRASH, "Browser session not available", retryable=True)
+            return False
+
+        # Check retry limit
+        if current.attempt_count > self.max_retries:
+            logger.warning(f"Task {task.id} exceeded maximum retries ({current.attempt_count} > {self.max_retries}); escalating to manual review")
+            self._handle_failure(
+                current, context, ErrorCode.INTERNAL_ERROR,
+                f"Exceeded max retries ({current.attempt_count})",
+                retryable=False, state=TaskState.MANUAL_REVIEW,
+            )
+            return False
+
+        try:
+            success = self.instagram_service.execute_messaging_task(
+                task=current,
+                session=session,
+                worker_id=context.worker_id,
+                correlation_id=context.correlation_id,
+            )
+
+            # Re-verify task ownership before considering execution finished
+            verify = self.task_repo.get_by_id(task.id)
+            if verify and verify.worker_id and verify.worker_id != context.worker_id:
+                logger.error(f"Task {task.id} ownership stolen by {verify.worker_id}")
+                return False
+
+            return success
+        except BrowserTimeoutError as e:
+            logger.error(f"Task {task.id} timed out during execution: {e}")
+            self._handle_failure(current, context, ErrorCode.TIMEOUT, str(e), retryable=True)
+            return False
+        except BrowserCrashError as e:
+            logger.error(f"Browser crashed during task {task.id}: {e}")
+            self._handle_failure(current, context, ErrorCode.BROWSER_CRASH, str(e), retryable=True, state=TaskState.INTERRUPTED)
+            return False
+        except Exception as e:
+            logger.error(f"Unexpected error executing task {task.id}: {e}")
+            self._handle_failure(current, context, ErrorCode.INTERNAL_ERROR, str(e), retryable=False)
+            return False
+        finally:
+            # Release lock in all cases if lock is still held
+            try:
+                latest = self.task_repo.get_by_id(task.id)
+                if latest and latest.lock_token == current.lock_token:
+                    self.task_repo.release_task(task.id, current.lock_token)
+            except Exception as e:
+                logger.warning(f"Failed to release task {task.id} lock in finally block: {e}")
 
     def execute_source_sync(
         self,

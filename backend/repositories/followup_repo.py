@@ -108,6 +108,20 @@ class FollowupRepository(BaseRepository):
             )
             return cursor.rowcount > 0
 
+    def schedule(self, followup_id: str, scheduled_at_iso: str) -> bool:
+        """Schedule a pending followup with an explicit execution time."""
+        now_iso = utc_now_iso()
+        query = """
+            UPDATE followups SET
+                status = 'SCHEDULED',
+                scheduled_at = ?,
+                updated_at = ?
+            WHERE id = ? AND status = 'PENDING';
+        """
+        with self.db.transaction() as conn:
+            cursor = conn.execute(query, (scheduled_at_iso, now_iso, followup_id))
+            return cursor.rowcount > 0
+
     def list_due(self, current_time_iso: Optional[str] = None) -> List[Followup]:
         """List followups that are scheduled and now due for processing."""
         if current_time_iso is None:
@@ -115,7 +129,7 @@ class FollowupRepository(BaseRepository):
         conn = self.db.get_connection()
         query = """
             SELECT * FROM followups
-            WHERE status IN ('PENDING', 'SCHEDULED')
+            WHERE status = 'SCHEDULED'
               AND scheduled_at <= ?
             ORDER BY scheduled_at ASC;
         """

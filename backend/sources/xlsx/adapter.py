@@ -11,7 +11,7 @@ from openpyxl.workbook import Workbook
 
 from backend.domain.models import SourceRow
 from backend.domain.enums import SourceType, SourceAccessStatus, RepliedStatus, ErrorCode
-from backend.domain.errors import ValidationError, SourceAccessError
+from backend.domain.errors import ValidationError, SourceAccessError, ConflictError
 from backend.sources.base import SourceAdapter
 
 
@@ -243,7 +243,14 @@ class LocalXlsxSource(SourceAdapter):
         return rows
 
     def update_record(self, row_index: int, updates: Dict[str, Any]) -> bool:
-        """Update specific cells in the spreadsheet workbook and save."""
+        """
+        Update specific cells in the spreadsheet workbook with transactional read-back verification:
+        1. Read current value
+        2. Write value
+        3. Save workbook to disk
+        4. Re-open and read back cell value
+        5. Compare and raise ConflictError on mismatch
+        """
         # For updates, open with data_only=False to preserve formulas
         wb = openpyxl.load_workbook(self.file_path)
         sheet = wb.active
@@ -264,6 +271,7 @@ class LocalXlsxSource(SourceAdapter):
 
         # If an updated field has no column, append a new header column
         max_col = sheet.max_column
+        written_fields: Dict[str, int] = {}
         for field_name, value in updates.items():
             col_idx = field_to_col.get(field_name)
             if col_idx is None:
@@ -273,9 +281,29 @@ class LocalXlsxSource(SourceAdapter):
                 field_to_col[field_name] = col_idx
 
             sheet.cell(row=row_index, column=col_idx, value=value)
+            written_fields[field_name] = col_idx
 
         wb.save(self.file_path)
         wb.close()
+
+        # Step 4 & 5: Read back and compare for persistence verification
+        verify_wb = openpyxl.load_workbook(self.file_path, data_only=True)
+        verify_sheet = verify_wb.active
+        try:
+            for field_name, expected_val in updates.items():
+                c_idx = written_fields[field_name]
+                read_val = verify_sheet.cell(row=row_index, column=c_idx).value
+                # Normalize string representations for comparison
+                str_read = str(read_val or "").strip()
+                str_expected = str(expected_val if expected_val is not None else "").strip()
+                if str_read != str_expected:
+                    raise ConflictError(
+                        f"XLSX write-back verification failed for row {row_index} col '{field_name}'. "
+                        f"Expected '{str_expected}', read back '{str_read}'."
+                    )
+        finally:
+            verify_wb.close()
+
         return True
 
     def close(self) -> None:

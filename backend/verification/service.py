@@ -41,9 +41,15 @@ class SimpleVerificationEngine(VerificationEngine):
         expected_url = expected.instagram_url.rstrip("/").lower()
         signals["url_match"] = bool(observed_url and observed_url == expected_url)
 
-        if expected.username and observed.get("username"):
+        exp_username = expected.username
+        if not exp_username and expected.instagram_url:
+            parts = [p for p in expected.instagram_url.rstrip("/").split("/") if p and "instagram.com" not in p]
+            if parts:
+                exp_username = parts[-1]
+
+        if exp_username and observed.get("username"):
             signals["username_match"] = (
-                expected.username.strip().lower() == str(observed["username"]).strip().lower()
+                exp_username.strip().lower() == str(observed["username"]).strip().lower()
             )
         else:
             signals["username_match"] = False
@@ -63,7 +69,7 @@ class SimpleVerificationEngine(VerificationEngine):
             signals["follower_close"] = False
 
         # Detect total profile mismatch when an alternate profile was loaded
-        if observed.get("username") and expected.username:
+        if observed.get("username") and exp_username:
             if not signals["username_match"] and not signals["url_match"]:
                 signals["mismatch"] = True
 
