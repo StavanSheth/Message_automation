@@ -376,7 +376,7 @@ def test_invariant_9_and_10_crash_recovery_during_sending_reconciles(inv_env):
 
     # Task was in SENDING with expired lease
     inv_env["contact_repo"].create(Contact(id="C-CRASH", name="Crash User", instagram_url="https://instagram.com/crash"))
-    task = Task(id="T-CRASH-SEND", contact_id="C-CRASH", type=TaskType.MESSAGE, status=TaskState.RUNNING)
+    task = Task(id="T-CRASH-SEND", contact_id="C-CRASH", type=TaskType.MESSAGE, status=TaskState.READY)
     task_repo.create(task)
     task_repo.acquire_lease("T-CRASH-SEND", "worker-dead", lease_duration_seconds=-30)
 

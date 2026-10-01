@@ -266,8 +266,8 @@ class InstagramAutomationService:
             return False
 
         # ── 3. Profile Navigation ────────────────────────────────
-        nav_result = self.navigator.navigate_to_profile(session, contact.instagram_url)
-        page_status = nav_result.get("status", InstagramPageStatus.AVAILABLE)
+        nav_result = self.navigator.navigate_to_profile(session, contact.instagram_url) or {}
+        page_status = nav_result.get("status", InstagramPageStatus.UNKNOWN) or InstagramPageStatus.UNKNOWN
 
         self.event_repo.record(
             event_code=EventCode.PROFILE_OPENED,
@@ -346,6 +346,13 @@ class InstagramAutomationService:
                 current_task, ErrorCode.TIMEOUT, "Navigation to profile timed out or failed", retryable=True, worker_id=worker_id
             )
             self.task_repo.update_state(current_task.id, TaskState.RETRY_WAIT, worker_id=worker_id)
+            return False
+
+        if page_status not in (InstagramPageStatus.AVAILABLE, InstagramPageStatus.PRIVATE):
+            self._record_error(
+                current_task, ErrorCode.UI_CHANGED, f"Instagram navigation returned non-proceedable status: {page_status}", retryable=False, worker_id=worker_id
+            )
+            self.task_repo.update_state(current_task.id, TaskState.MANUAL_REVIEW, worker_id=worker_id)
             return False
 
         # ── 4. Profile Extraction & Verification ──────────────────

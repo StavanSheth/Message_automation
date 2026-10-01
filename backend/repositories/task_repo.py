@@ -324,7 +324,7 @@ class TaskRepository(BaseRepository):
                 attempt_count = attempt_count + 1,
                 updated_at = ?
             WHERE id = ?
-              AND status IN ('READY', 'QUEUED', 'RUNNING')
+              AND status IN ('READY', 'QUEUED')
               AND (lease_id IS NULL OR lease_expires_at < ?);
         """
         with self.db.transaction() as conn:

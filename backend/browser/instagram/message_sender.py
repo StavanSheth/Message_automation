@@ -24,18 +24,31 @@ class InstagramMessageSender:
         driver = getattr(session, "driver", None)
         driver_page = getattr(driver, "_page", None) if driver is not None else None
         action_performed_natively = False
+        native_send_initiated = False
 
         if driver_page is not None:
             try:
                 send_button = driver_page.locator('button:has-text("Send"), div[role="button"]:has-text("Send")').first
                 if send_button.is_visible():
+                    native_send_initiated = True
                     send_button.click(timeout=3000)
                     action_performed_natively = True
                 else:
+                    native_send_initiated = True
                     driver_page.keyboard.press("Enter")
                     action_performed_natively = True
             except Exception as e:
-                logger.debug(f"Native Playwright send interaction had exception: {e}")
+                logger.warning(f"Native Playwright send interaction threw exception: {e}")
+                if native_send_initiated:
+                    # CRITICAL SINGLE-SEND GUARANTEE:
+                    # Once a click or keystroke has been initiated, we cannot prove zero action occurred.
+                    # Falling back to a DOM send creates a double-send risk. Route to reconciliation safely.
+                    return {
+                        "submitted": False,
+                        "reason": f"native_send_exception_after_initiation: {e}",
+                        "error_code": ErrorCode.UNKNOWN_RESULT,
+                        "is_ambiguous": True,
+                    }
 
         # 2. If native send was performed, evaluate post-send state.
         # If native send was NOT performed, perform pre-check, exactly ONE DOM send action, and post-check.

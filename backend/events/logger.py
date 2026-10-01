@@ -43,6 +43,8 @@ class StructuredFormatter(logging.Formatter):
         # Extract custom correlation attributes
         task_id = getattr(record, "task_id", None)
         worker_id = getattr(record, "worker_id", None)
+        session_id = getattr(record, "session_id", None)
+        correlation_id = getattr(record, "correlation_id", None)
         run_id = getattr(record, "run_id", None)
         sync_id = getattr(record, "sync_id", None)
         error_code = getattr(record, "error_code", None)
@@ -59,10 +61,14 @@ class StructuredFormatter(logging.Formatter):
                 "module": record.name,
                 "message": msg_redacted,
             }
+            if correlation_id:
+                payload["correlation_id"] = correlation_id
             if task_id:
                 payload["task_id"] = task_id
             if worker_id:
                 payload["worker_id"] = worker_id
+            if session_id:
+                payload["session_id"] = session_id
             if run_id:
                 payload["run_id"] = run_id
             if sync_id:
@@ -73,10 +79,14 @@ class StructuredFormatter(logging.Formatter):
 
         # Standard human-readable structured line
         correlation_parts = []
+        if correlation_id:
+            correlation_parts.append(f"[{correlation_id}]")
         if task_id:
             correlation_parts.append(f"[{task_id}]")
         if worker_id:
             correlation_parts.append(f"[{worker_id}]")
+        if session_id:
+            correlation_parts.append(f"[{session_id}]")
         if run_id:
             correlation_parts.append(f"[{run_id}]")
         if sync_id:

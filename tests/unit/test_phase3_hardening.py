@@ -114,6 +114,60 @@ def test_execution_service_cleans_up_key_after_execution():
     assert len(service._active_execution_keys) == 0
 
 
+def test_execution_service_strictly_requires_valid_lease():
+    task_repo = MagicMock()
+    message_repo = MagicMock()
+    automation_service = MagicMock()
+
+    service = ExecutionService(
+        task_repo=task_repo,
+        message_repo=message_repo,
+        automation_service=automation_service,
+    )
+
+    task = Task(id="T-LEASE-REQ", contact_id="C-1", type=TaskType.MESSAGE, status=TaskState.READY, sequence=0)
+    task_repo.get_by_id.return_value = task
+    mock_session = MagicMock()
+
+    # 1. Lease omitted (None) -> MUST abort immediately
+    res_none = service.execute_task(task_id="T-LEASE-REQ", lease_id=None, worker_id="W-1", session=mock_session)
+    assert res_none is False
+    automation_service.execute_messaging_task.assert_not_called()
+
+    # 2. Lease invalid or not owned by worker -> MUST abort immediately
+    task_repo.is_lease_valid.return_value = False
+    res_invalid = service.execute_task(task_id="T-LEASE-REQ", lease_id="L-EXPIRED", worker_id="W-1", session=mock_session)
+    assert res_invalid is False
+    automation_service.execute_messaging_task.assert_not_called()
+
+
+def test_execution_service_aborts_on_identity_creation_conflict():
+    task_repo = MagicMock()
+    message_repo = MagicMock()
+    automation_service = MagicMock()
+    exec_id_repo = MagicMock()
+
+    service = ExecutionService(
+        task_repo=task_repo,
+        message_repo=message_repo,
+        automation_service=automation_service,
+        execution_identity_repo=exec_id_repo,
+    )
+
+    task = Task(id="T-RACE-1", contact_id="C-1", type=TaskType.MESSAGE, status=TaskState.READY, sequence=0)
+    task_repo.get_by_id.return_value = task
+    task_repo.is_lease_valid.return_value = True
+    exec_id_repo.get.return_value = None
+    # Simulate DB unique constraint IntegrityError on race condition
+    exec_id_repo.create.side_effect = Exception("UNIQUE constraint failed: execution_identities.execution_key")
+
+    mock_session = MagicMock()
+    result = service.execute_task(task_id="T-RACE-1", lease_id="L-VALID", worker_id="W-1", session=mock_session)
+    assert result is False
+    automation_service.execute_messaging_task.assert_not_called()
+    assert len(service._active_execution_keys) == 0
+
+
 # ── 2. Pre-Execution Auth Validation Tests ────────────────────────────────────
 
 def test_instagram_automation_pre_execution_auth_login_required(db_repos):
@@ -186,6 +240,45 @@ def test_instagram_automation_pre_execution_auth_challenge(db_repos):
 
     errors = error_repo.list_by_task("T-AUTH-2")
     assert any(e.code == ErrorCode.CHALLENGE_REQUIRED for e in errors)
+
+
+def test_instagram_automation_empty_or_malformed_navigation_fails_closed_to_manual_review(db_repos):
+    db, contact_repo, task_repo, msg_repo, followup_repo, event_repo, error_repo = db_repos
+
+    task = Task(id="T-FAIL-CLOSED-1", contact_id="C-HARD-1", type=TaskType.MESSAGE, status=TaskState.READY)
+    task_repo.create(task)
+    msg = Message(id="M-FAIL-CLOSED-1", contact_id="C-HARD-1", task_id="T-FAIL-CLOSED-1", sequence=0, body="Hi", status=MessageState.PENDING)
+    msg_repo.create(msg)
+
+    auth_validator = MagicMock()
+    auth_validator.check_auth_state.return_value = (SessionAuthState.AUTHENTICATED, "ok")
+
+    navigator = MagicMock()
+    # Return empty dict simulating unexpected navigator failure or bug
+    navigator.navigate_to_profile.return_value = {}
+
+    service = InstagramAutomationService(
+        task_repo=task_repo,
+        contact_repo=contact_repo,
+        message_repo=msg_repo,
+        followup_repo=followup_repo,
+        error_repo=error_repo,
+        event_repo=event_repo,
+        auth_validator=auth_validator,
+        navigator=navigator,
+    )
+
+    mock_session = MagicMock()
+    mock_session.is_alive.return_value = True
+
+    result = service.execute_messaging_task(task, mock_session, worker_id="W-1")
+    assert result is False
+
+    updated_task = task_repo.get_by_id("T-FAIL-CLOSED-1")
+    assert updated_task.status == TaskState.MANUAL_REVIEW
+
+    errors = error_repo.list_by_task("T-FAIL-CLOSED-1")
+    assert any(e.code == ErrorCode.UI_CHANGED for e in errors)
 
 
 # ── 3. Rate-Limit Cooldown Tracking Tests ─────────────────────────────────────

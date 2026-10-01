@@ -56,19 +56,30 @@ def test_expired_lease_can_be_recovered_by_another_worker(task_repo):
     task = Task(id="T-LEASE-3", contact_id="C-1", type=TaskType.MESSAGE, status=TaskState.READY)
     task_repo.create(task)
 
-    # Acquire lease with 0 duration so it expires immediately
+    # Acquire lease with negative duration so it expires immediately while status is RUNNING
     lease1 = task_repo.acquire_lease("T-LEASE-3", "worker-1", lease_duration_seconds=-10)
     assert lease1 is not None
     assert task_repo.is_lease_valid("T-LEASE-3", lease1) is False
 
-    # Second worker can now acquire the expired lease
+    # Direct stealing of an expired RUNNING task MUST fail (preventing double-execution)
     lease2 = task_repo.acquire_lease("T-LEASE-3", "worker-2", lease_duration_seconds=120)
-    assert lease2 is not None
-    assert lease2 != lease1
+    assert lease2 is None
+
+    # Safe recovery transitions expired RUNNING task -> INTERRUPTED
+    recovered = task_repo.recover_expired_lease("T-LEASE-3")
+    assert recovered is not None
+    assert recovered.status == TaskState.INTERRUPTED
+    assert recovered.lease_id is None
+
+    # Once recovery policy resets task to READY, worker-2 can acquire it
+    task_repo.update_state("T-LEASE-3", TaskState.READY, enforce_transition=False)
+    lease3 = task_repo.acquire_lease("T-LEASE-3", "worker-2", lease_duration_seconds=120)
+    assert lease3 is not None
+    assert lease3 != lease1
 
     t = task_repo.get_by_id("T-LEASE-3")
     assert t.lease_owner == "worker-2"
-    assert t.lease_id == lease2
+    assert t.lease_id == lease3
 
 
 def test_lease_renewal(task_repo):

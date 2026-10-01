@@ -73,7 +73,25 @@ class ExecutionService:
             return False
         task_id = task.id
 
-        # ── 0. Deterministic Execution Identity & Deduplication ───
+        # ── 1. Strict Lease Validation ───────────────────────────
+        # A production worker execution path strictly requires a valid held lease
+        if not lease_id or not self.task_repo.is_lease_valid(task_id, lease_id, worker_id=worker_id):
+            logger.error(f"Execution rejected: no valid active lease held by worker {worker_id} for task {task_id} (lease_id={lease_id})")
+            if self.event_repo:
+                self.event_repo.record(
+                    event_code=EventCode.LEASE_EXPIRED,
+                    category="worker",
+                    level=EventLevel.WARNING,
+                    entity_type="task",
+                    entity_id=task_id,
+                    task_id=task_id,
+                    worker_id=worker_id,
+                    correlation_id=corr_id,
+                    payload={"worker_id": worker_id, "lease_id": lease_id, "correlation_id": corr_id},
+                )
+            return False
+
+        # ── 2. Deterministic Execution Identity & Deduplication ───
         exec_key = self._compute_execution_key(task)
         if exec_key in self._active_execution_keys:
             logger.warning(f"Duplicate in-flight execution for key {exec_key}; rejecting")
@@ -113,25 +131,11 @@ class ExecutionService:
                 )
                 self.execution_identity_repo.create(new_identity)
             except Exception as e:
-                logger.debug(f"Could not record execution identity creation: {e}")
+                logger.warning(f"Execution identity creation conflict for {exec_key}: {e}; aborting duplicate concurrent execution")
+                self._active_execution_keys.discard(exec_key)
+                return False
 
         try:
-            # ── 1. Lease Validation ──────────────────────────────────
-            if lease_id and not self.task_repo.is_lease_valid(task_id, lease_id):
-                logger.error(f"Lease {lease_id} is expired or invalid for task {task_id}; aborting execution")
-                if self.event_repo:
-                    self.event_repo.record(
-                        event_code=EventCode.LEASE_EXPIRED,
-                        category="worker",
-                        level=EventLevel.WARNING,
-                        entity_type="task",
-                        entity_id=task_id,
-                        task_id=task_id,
-                        worker_id=worker_id,
-                        correlation_id=corr_id,
-                        payload={"worker_id": worker_id, "lease_id": lease_id, "correlation_id": corr_id},
-                    )
-                return False
 
             # ── 2. Duplicate Send Protection ─────────────────────────
             if self.message_repo.has_confirmed_sent_message(task_id):

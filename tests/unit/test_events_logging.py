@@ -66,3 +66,38 @@ def test_message_body_masking():
     masked = mask_message_body(body, max_chars=10)
     assert masked.startswith("Hello this...")
     assert f"[length: {len(body)}]" in masked
+
+
+def test_structured_formatter_includes_correlation_and_session_id():
+    import json
+    record = logging.LogRecord(
+        name="test_logger",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=10,
+        msg="Executing step",
+        args=(),
+        exc_info=None,
+    )
+    record.correlation_id = "CORR-999"
+    record.session_id = "SESS-888"
+    record.task_id = "TASK-777"
+    record.worker_id = "WORKER-1"
+
+    # JSON format
+    json_formatter = StructuredFormatter(as_json=True)
+    formatted_json = json_formatter.format(record)
+    parsed = json.loads(formatted_json)
+    assert parsed["correlation_id"] == "CORR-999"
+    assert parsed["session_id"] == "SESS-888"
+    assert parsed["task_id"] == "TASK-777"
+    assert parsed["worker_id"] == "WORKER-1"
+
+    # Plaintext format
+    text_formatter = StructuredFormatter(as_json=False)
+    formatted_text = text_formatter.format(record)
+    assert "[CORR-999]" in formatted_text
+    assert "[SESS-888]" in formatted_text
+    assert "[TASK-777]" in formatted_text
+    assert "[WORKER-1]" in formatted_text
+

@@ -18,6 +18,10 @@ dev = [
     "pytest>=8.0.0",
 ]
 
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["backend*"]
+
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
