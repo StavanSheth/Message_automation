@@ -14,6 +14,7 @@ from backend.domain.enums import (
     EventCode,
     EventLevel,
     VerificationDecision,
+    SessionAuthState,
 )
 from backend.domain.errors import AutomationError
 from backend.browser.session import BrowserSessionInstance
@@ -24,6 +25,7 @@ from backend.browser.instagram.profile_verifier import InstagramProfileVerifier
 from backend.browser.instagram.message_composer import InstagramMessageComposer
 from backend.browser.instagram.message_sender import InstagramMessageSender
 from backend.browser.instagram.send_verifier import InstagramSendVerifier
+from backend.browser.instagram.auth_validator import InstagramAuthValidator
 from backend.repositories.task_repo import TaskRepository
 from backend.repositories.contact_repo import ContactRepository
 from backend.repositories.message_repo import MessageRepository
@@ -60,6 +62,9 @@ class InstagramAutomationService:
         composer: Optional[InstagramMessageComposer] = None,
         sender: Optional[InstagramMessageSender] = None,
         send_verifier: Optional[InstagramSendVerifier] = None,
+        auth_validator: Optional[InstagramAuthValidator] = None,
+        reconciliation_service: Optional[Any] = None,
+        followup_service: Optional[Any] = None,
     ):
         self.task_repo = task_repo
         self.contact_repo = contact_repo
@@ -79,6 +84,9 @@ class InstagramAutomationService:
         self.composer = composer or InstagramMessageComposer()
         self.sender = sender or InstagramMessageSender()
         self.send_verifier = send_verifier or InstagramSendVerifier()
+        self.auth_validator = auth_validator or InstagramAuthValidator()
+        self.reconciliation_service = reconciliation_service
+        self.followup_service = followup_service
 
     def execute_messaging_task(
         self,
@@ -114,6 +122,18 @@ class InstagramAutomationService:
             self.task_repo.update_state(current_task.id, TaskState.SKIPPED, worker_id=worker_id)
             return True
 
+        # Guard: Deduplication check - never send if task already has confirmed SENT message
+        if self.message_repo.has_confirmed_sent_message(current_task.id):
+            logger.info(f"Task {current_task.id} already has a confirmed SENT message; marking COMPLETED without sending")
+            self.task_repo.update_state(current_task.id, TaskState.COMPLETED, worker_id=worker_id)
+            return True
+
+        # Guard: Do not send if previous attempt is in RECONCILIATION
+        if self.message_repo.is_in_reconciliation(current_task.id):
+            logger.warning(f"Task {current_task.id} has a message in RECONCILIATION; refusing to send again")
+            self.task_repo.update_state(current_task.id, TaskState.MANUAL_REVIEW, worker_id=worker_id)
+            return False
+
         # Fetch message record to send
         message_record = self._get_or_create_message_record(current_task, contact)
         if not message_record:
@@ -127,9 +147,24 @@ class InstagramAutomationService:
         except Exception as e:
             logger.warning(f"Could not transition task to VALIDATING: {e}")
 
+        # ── 2b. Session Validation ──────────────────────────────
+        if not session or not session.is_alive():
+            self._record_error(current_task, ErrorCode.BROWSER_CRASH, "Browser session not alive", retryable=True, worker_id=worker_id)
+            self.task_repo.update_state(current_task.id, TaskState.RETRY_WAIT, worker_id=worker_id)
+            return False
+
         # ── 3. Profile Navigation ────────────────────────────────
         nav_result = self.navigator.navigate_to_profile(session, contact.instagram_url)
         page_status = nav_result.get("status", InstagramPageStatus.AVAILABLE)
+
+        self.event_repo.record(
+            event_code=EventCode.PROFILE_OPENED,
+            category="worker",
+            level=EventLevel.INFO,
+            entity_type="task",
+            entity_id=current_task.id,
+            payload={"url": contact.instagram_url, "status": page_status, "correlation_id": corr_id},
+        )
 
         if page_status == InstagramPageStatus.LOGIN_REQUIRED:
             self._record_error(
@@ -141,7 +176,7 @@ class InstagramAutomationService:
                 level=EventLevel.CRITICAL,
                 entity_type="task",
                 entity_id=current_task.id,
-                payload={"worker_id": worker_id, "url": nav_result.get("url")},
+                payload={"worker_id": worker_id, "url": nav_result.get("url"), "correlation_id": corr_id},
             )
             self.task_repo.update_state(current_task.id, TaskState.MANUAL_REVIEW, worker_id=worker_id)
             return False
@@ -151,6 +186,28 @@ class InstagramAutomationService:
                 current_task, ErrorCode.PROFILE_NOT_FOUND, "Target profile not found on Instagram", retryable=False, worker_id=worker_id
             )
             self.task_repo.update_state(current_task.id, TaskState.SKIPPED, worker_id=worker_id)
+            return False
+
+        if page_status == InstagramPageStatus.ACCESS_BLOCKED:
+            self._record_error(
+                current_task, ErrorCode.ACTION_BLOCKED, "Instagram access blocked or rate limited", retryable=False, worker_id=worker_id
+            )
+            self.task_repo.update_state(current_task.id, TaskState.MANUAL_REVIEW, worker_id=worker_id)
+            return False
+
+        if page_status == InstagramPageStatus.UNKNOWN:
+            self._record_error(
+                current_task, ErrorCode.UI_CHANGED, "Instagram UI structure unrecognized", retryable=False, worker_id=worker_id
+            )
+            self.event_repo.record(
+                event_code=EventCode.MANUAL_REVIEW_REQUIRED,
+                category="worker",
+                level=EventLevel.WARNING,
+                entity_type="task",
+                entity_id=current_task.id,
+                payload={"worker_id": worker_id, "reason": "unrecognized_profile_ui", "correlation_id": corr_id},
+            )
+            self.task_repo.update_state(current_task.id, TaskState.MANUAL_REVIEW, worker_id=worker_id)
             return False
 
         if page_status == InstagramPageStatus.RESTRICTED:
@@ -173,6 +230,15 @@ class InstagramAutomationService:
             contact=contact,
             observed=observed,
             task_id=current_task.id,
+        )
+
+        self.event_repo.record(
+            event_code=EventCode.PROFILE_VERIFIED,
+            category="worker",
+            level=EventLevel.INFO,
+            entity_type="task",
+            entity_id=current_task.id,
+            payload={"decision": decision.value, "confidence": confidence, "correlation_id": corr_id},
         )
 
         if decision == VerificationDecision.MISMATCH:
@@ -198,7 +264,6 @@ class InstagramAutomationService:
 
         # ── 5. Check DM Availability ─────────────────────────────
         if not observed.get("can_message", False):
-            # Check if private and not messageable
             logger.warning(f"Direct messaging unavailable for contact {contact.id}")
             self._record_error(
                 current_task, ErrorCode.DM_NOT_AVAILABLE, "DM action not available on profile", retryable=False, worker_id=worker_id
@@ -208,8 +273,7 @@ class InstagramAutomationService:
             return False
 
         # ── 6. Open Dialog & Compose Message ──────────────────────
-        self.task_repo.update_state(current_task.id, TaskState.RUNNING, worker_id=worker_id)
-        self.message_repo.update_status(message_record.id, MessageState.SENDING)
+        self.task_repo.update_state(current_task.id, TaskState.RUNNING, worker_id=worker_id, enforce_transition=False)
 
         dialog_res = self.composer.open_message_dialog(session)
         if not dialog_res.get("success"):
@@ -229,31 +293,71 @@ class InstagramAutomationService:
             self.task_repo.update_state(current_task.id, TaskState.RETRY_WAIT, worker_id=worker_id)
             return False
 
-        # ── 7. Submit / Send Message ──────────────────────────────
         self.event_repo.record(
-            event_code=EventCode.MESSAGE_ATTEMPTED,
+            event_code=EventCode.MESSAGE_COMPOSED,
             category="messaging",
             level=EventLevel.INFO,
             entity_type="message",
             entity_id=message_record.id,
-            payload={"task_id": current_task.id, "contact_id": contact.id},
+            payload={"task_id": current_task.id, "correlation_id": corr_id},
+        )
+
+        # ── 7. Submit / Send Message (Strict Single Send) ──────────
+        self.message_repo.update_status(message_record.id, MessageState.SENDING)
+
+        self.event_repo.record(
+            event_code=EventCode.MESSAGE_SEND_STARTED,
+            category="messaging",
+            level=EventLevel.INFO,
+            entity_type="message",
+            entity_id=message_record.id,
+            payload={"task_id": current_task.id, "contact_id": contact.id, "correlation_id": corr_id},
         )
 
         send_res = self.sender.submit_send(session)
         if not send_res.get("submitted"):
             err_code = send_res.get("error_code") or ErrorCode.MESSAGE_SEND_FAILED
-            self._record_error(
-                current_task, err_code, send_res.get("reason", "Send failed"), retryable=False, worker_id=worker_id
-            )
-            self.message_repo.update_status(message_record.id, MessageState.FAILED)
-            self.task_repo.update_state(current_task.id, TaskState.FAILED, worker_id=worker_id)
-            return False
+            is_ambiguous = send_res.get("is_ambiguous", False) or err_code == ErrorCode.UNKNOWN_RESULT
+            if is_ambiguous and self.reconciliation_service:
+                self.event_repo.record(
+                    event_code=EventCode.MESSAGE_SEND_AMBIGUOUS,
+                    category="messaging",
+                    level=EventLevel.WARNING,
+                    entity_type="message",
+                    entity_id=message_record.id,
+                    payload={"task_id": current_task.id, "reason": send_res.get("reason"), "correlation_id": corr_id},
+                )
+                self.reconciliation_service.enter_reconciliation(
+                    task_id=current_task.id,
+                    message_id=message_record.id,
+                    worker_id=worker_id,
+                    session_id=session.session_id if session else None,
+                    reason=send_res.get("reason", "send_ambiguous"),
+                )
+                return False
+            else:
+                self._record_error(
+                    current_task, err_code, send_res.get("reason", "Send failed"), retryable=False, worker_id=worker_id
+                )
+                self.message_repo.update_status(message_record.id, MessageState.FAILED)
+                self.task_repo.update_state(current_task.id, TaskState.FAILED, worker_id=worker_id)
+                return False
 
         # ── 8. Send Verification ──────────────────────────────────
+        self.message_repo.update_status(message_record.id, MessageState.VERIFYING)
+
+        self.event_repo.record(
+            event_code=EventCode.MESSAGE_VERIFICATION_STARTED,
+            category="messaging",
+            level=EventLevel.INFO,
+            entity_type="message",
+            entity_id=message_record.id,
+            payload={"task_id": current_task.id, "correlation_id": corr_id},
+        )
+
         verification_res = self.send_verifier.verify_sent_message(session, message_record.body, contact.username)
 
         if verification_res.get("confirmed"):
-            # Confirmed sent
             now_sent = utc_now_iso()
             self.message_repo.update_status(
                 message_record.id,
@@ -264,24 +368,31 @@ class InstagramAutomationService:
             self.task_repo.update_state(current_task.id, TaskState.COMPLETED, worker_id=worker_id)
 
             self.event_repo.record(
-                event_code=EventCode.MESSAGE_CONFIRMED,
+                event_code=EventCode.MESSAGE_VERIFIED,
                 category="messaging",
                 level=EventLevel.INFO,
                 entity_type="message",
                 entity_id=message_record.id,
-                payload={"task_id": current_task.id, "contact_id": contact.id, "confirmed_at": now_sent},
+                payload={"task_id": current_task.id, "contact_id": contact.id, "confirmed_at": now_sent, "correlation_id": corr_id},
             )
 
             # Schedule follow-up after prerequisite message confirms
             self._schedule_next_followup(current_task, contact, now_sent)
             return True
         else:
-            # Ambiguous or failed delivery
-            msg_state = verification_res.get("message_state", MessageState.RECONCILIATION)
-            tsk_state = verification_res.get("task_state", TaskState.MANUAL_REVIEW)
-
-            self.message_repo.update_status(message_record.id, msg_state, result_code="AMBIGUOUS")
-            self.task_repo.update_state(current_task.id, tsk_state, worker_id=worker_id)
+            if self.reconciliation_service:
+                self.reconciliation_service.enter_reconciliation(
+                    task_id=current_task.id,
+                    message_id=message_record.id,
+                    worker_id=worker_id,
+                    session_id=session.session_id if session else None,
+                    reason=f"Send outcome unconfirmed: {verification_res.get('reason')}",
+                )
+            else:
+                msg_state = verification_res.get("message_state", MessageState.RECONCILIATION)
+                tsk_state = verification_res.get("task_state", TaskState.MANUAL_REVIEW)
+                self.message_repo.update_status(message_record.id, msg_state, result_code="AMBIGUOUS")
+                self.task_repo.update_state(current_task.id, tsk_state, worker_id=worker_id)
 
             self._record_error(
                 current_task,

@@ -40,6 +40,7 @@ class Worker:
         worker_repo: Optional[WorkerRepository] = None,
     ):
         settings = get_settings()
+        self.settings = settings
         self.worker_id = worker_id
         self.worker_code = worker_code
         self.mode = mode
@@ -53,6 +54,7 @@ class Worker:
         self.current_task_id: Optional[str] = None
         self.last_heartbeat: str = utc_now_iso()
         self._lock_token: Optional[str] = None
+        self._lease_id: Optional[str] = None
 
         self._lock = threading.Lock()
         self._heartbeat_thread: Optional[threading.Thread] = None
@@ -150,6 +152,18 @@ class Worker:
                 self.last_heartbeat = utc_now_iso()
             self._persist_state()
 
+            # Renew lease on held task
+            if self.current_task_id and self._lease_id:
+                try:
+                    self.task_repo.renew_lease(
+                        task_id=self.current_task_id,
+                        lease_id=self._lease_id,
+                        worker_id=self.worker_id,
+                        lease_duration_seconds=getattr(self.settings, "lease_timeout", 120),
+                    )
+                except Exception as e:
+                    logger.debug(f"Error renewing lease: {e}")
+
     def heartbeat(self) -> str:
         """Record an explicit heartbeat timestamp and persist."""
         with self._lock:
@@ -170,17 +184,33 @@ class Worker:
             return True
 
     def claim_task(self, task_id: str) -> bool:
-        """Attempt to atomically claim a task for execution."""
+        """Attempt to atomically claim a task and lease for execution."""
         with self._lock:
             if self.status != WorkerStatus.IDLE:
                 return False
 
         lock_token = generate_id("LOCK")
-        claimed = self.task_repo.claim_task(task_id, self.worker_id, lock_token)
+        lease_duration = getattr(self.settings, "lease_timeout", 120)
+        claimed = self.task_repo.claim_task(task_id, self.worker_id, lock_token, lease_duration)
+        lease_id = lock_token
+
+        if not claimed:
+            # Check if task has expired lease and can be reclaimed
+            acquired_lease = self.task_repo.acquire_lease(
+                task_id=task_id,
+                worker_id=self.worker_id,
+                lease_duration_seconds=lease_duration,
+            )
+            if acquired_lease is not None:
+                claimed = True
+                lease_id = acquired_lease
+                lock_token = acquired_lease
+
         if claimed:
             with self._lock:
                 self.current_task_id = task_id
                 self._lock_token = lock_token
+                self._lease_id = lease_id
                 self.status = WorkerStatus.BUSY
                 self.last_heartbeat = utc_now_iso()
             self._persist_state()
@@ -190,19 +220,22 @@ class Worker:
                 level=EventLevel.INFO,
                 entity_type="task",
                 entity_id=task_id,
-                payload={"worker_id": self.worker_id, "lock_token": lock_token},
+                payload={"worker_id": self.worker_id, "lock_token": lock_token, "lease_id": lease_id},
             )
         return claimed
 
     def release_current_task(self) -> None:
-        """Release the currently held task and return to IDLE."""
+        """Release the currently held task and lease and return to IDLE."""
         tid = None
         token = None
+        lid = None
         with self._lock:
             tid = self.current_task_id
             token = self._lock_token
+            lid = self._lease_id
             self.current_task_id = None
             self._lock_token = None
+            self._lease_id = None
             if self.status not in (WorkerStatus.STOPPED, WorkerStatus.CRASHED):
                 self.status = WorkerStatus.IDLE
             self.last_heartbeat = utc_now_iso()
@@ -214,6 +247,12 @@ class Worker:
                 self.task_repo.release_task(tid, token)
             except Exception as e:
                 logger.warning(f"Error releasing task {tid} for worker {self.worker_id}: {e}")
+
+        if tid and lid:
+            try:
+                self.task_repo.release_lease(tid, lid, self.worker_id)
+            except Exception as e:
+                logger.warning(f"Error releasing lease for task {tid} on worker {self.worker_id}: {e}")
 
     def process_next_task(self, executor: Any, adapter: Optional[Any] = None) -> bool:
         """

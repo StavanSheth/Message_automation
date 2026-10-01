@@ -21,9 +21,12 @@ logger = get_logger("instagram_navigator")
 class InstagramPageStatus:
     AVAILABLE = "AVAILABLE"
     NOT_FOUND = "NOT_FOUND"
+    PRIVATE = "PRIVATE"
     LOGIN_REQUIRED = "LOGIN_REQUIRED"
+    ACCESS_BLOCKED = "ACCESS_BLOCKED"
     RESTRICTED = "RESTRICTED"
     UNAVAILABLE = "UNAVAILABLE"
+    UNKNOWN = "UNKNOWN"
 
 
 class InstagramNavigator:
@@ -169,7 +172,28 @@ class InstagramNavigator:
                     return { status: 'NOT_FOUND', reason: 'page_not_found_message' };
                 }
 
-                // 3. Check for restricted / age-gated profile
+                // 3. Check for access blocked / rate limit / challenge / checkpoint
+                if (
+                    currentUrl.includes('/challenge/') ||
+                    currentUrl.includes('/checkpoint/') ||
+                    bodyText.includes('Action Blocked') ||
+                    bodyText.includes('Try again later') ||
+                    bodyText.includes('Too Many Requests') ||
+                    bodyText.includes('Help us confirm it is you')
+                ) {
+                    return { status: 'ACCESS_BLOCKED', reason: 'access_blocked_or_challenge' };
+                }
+
+                // 4. Check for private profile
+                if (
+                    bodyText.includes('This Account is Private') ||
+                    bodyText.includes('This account is private') ||
+                    document.querySelector('div[aria-label*="Private"]')
+                ) {
+                    return { status: 'PRIVATE', reason: 'account_is_private' };
+                }
+
+                // 5. Check for restricted / age-gated profile
                 if (
                     bodyText.includes('Restricted profile') ||
                     bodyText.includes('Must be 18 or older') ||
@@ -178,7 +202,7 @@ class InstagramNavigator:
                     return { status: 'RESTRICTED', reason: 'profile_restricted' };
                 }
 
-                // 4. Specific Instagram profile signals (strong identity verification)
+                // 6. Specific Instagram profile signals (strong identity verification)
                 const hasCanonicalProfile = !!document.querySelector('link[rel="canonical"][href*="instagram.com/"]');
                 const hasOgProfile = !!document.querySelector('meta[property="og:type"][content="profile"]') ||
                                      !!document.querySelector('meta[property="og:url"][content*="instagram.com/"]');
@@ -191,17 +215,18 @@ class InstagramNavigator:
                     return { status: 'AVAILABLE', reason: 'instagram_profile_detected' };
                 }
 
-                // 5. Fallback for lightweight / mobile web structures
+                // 7. Fallback for lightweight / mobile web structures
                 const hasMain = !!document.querySelector('section main, main[role="main"]');
                 if (hasMain && (hasUsernameHeader || document.querySelector('header'))) {
                     return { status: 'AVAILABLE', reason: 'profile_elements_fallback' };
                 }
 
-                return { status: 'AVAILABLE', reason: 'default_available' };
+                // 8. Fail-closed: Never default unrecognized DOM to AVAILABLE
+                return { status: 'UNKNOWN', reason: 'unrecognized_dom_structure' };
             }"""
         )
 
-        detected_status = page_state.get("status", InstagramPageStatus.AVAILABLE) if isinstance(page_state, dict) else InstagramPageStatus.AVAILABLE
+        detected_status = page_state.get("status", InstagramPageStatus.UNKNOWN) if isinstance(page_state, dict) else InstagramPageStatus.UNKNOWN
         reason = page_state.get("reason", "") if isinstance(page_state, dict) else ""
 
         return {

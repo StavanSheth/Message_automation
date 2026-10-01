@@ -1,7 +1,7 @@
 """Authoritative recovery service and reconciliation engine for interrupted tasks and crashed workers."""
 
 from abc import ABC, abstractmethod
-from typing import List, Optional
+from typing import Any, List, Optional
 from backend.domain.models import Task, utc_now_iso
 from backend.domain.enums import TaskState, EventCode, EventLevel, ErrorCode
 from backend.repositories.task_repo import TaskRepository
@@ -64,10 +64,12 @@ class DefaultRecoveryService(RecoveryService):
         task_repo: TaskRepository,
         event_repo: Optional[EventRepository] = None,
         error_repo: Optional[ErrorRepository] = None,
+        reconciliation_service: Optional[Any] = None,
     ):
         self.task_repo = task_repo
         self.event_repo = event_repo
         self.error_repo = error_repo
+        self.reconciliation_service = reconciliation_service
 
     def enter_reconciliation(self, task_id: str, reason: str = "") -> Task:
         """Move a task into RECONCILING state."""
@@ -238,5 +240,14 @@ class DefaultRecoveryService(RecoveryService):
                     (now_iso, tid),
                 )
                 recovered_count += 1
-
         return recovered_count
+
+    def recover_expired_leases(self) -> int:
+        """Scan and recover tasks whose lease has expired using TaskRecoveryHandler."""
+        from backend.recovery.task_recovery import TaskRecoveryHandler
+        handler = TaskRecoveryHandler(
+            task_repo=self.task_repo,
+            reconciliation_service=self.reconciliation_service,
+            event_repo=self.event_repo,
+        )
+        return handler.recover_expired_leases()

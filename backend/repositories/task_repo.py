@@ -1,14 +1,16 @@
 """Task repository with atomic locking, duplicate protection, and state transitions."""
 
 import sqlite3
+from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Set
 from backend.repositories.base import BaseRepository
 from backend.domain.models import Task, utc_now_iso
 from backend.domain.enums import TaskType, TaskState
 from backend.domain.errors import DuplicateTaskError, TaskStateError
+from backend.events.correlation import generate_id
 
 
-# Valid state transitions from Document 3
+# Valid state transitions from Document 3 + Phase 3 pipeline
 VALID_TRANSITIONS: dict[TaskState, Set[TaskState]] = {
     TaskState.CREATED: {TaskState.VALIDATING, TaskState.CANCELLED},
     TaskState.VALIDATING: {TaskState.QUEUED, TaskState.READY, TaskState.RUNNING, TaskState.SKIPPED, TaskState.CANCELLED, TaskState.FAILED, TaskState.MANUAL_REVIEW, TaskState.RETRY_WAIT},
@@ -16,6 +18,7 @@ VALID_TRANSITIONS: dict[TaskState, Set[TaskState]] = {
     TaskState.READY: {TaskState.RUNNING, TaskState.VALIDATING, TaskState.CANCELLED},
     TaskState.RUNNING: {
         TaskState.VALIDATING,
+        TaskState.SENDING,
         TaskState.COMPLETED,
         TaskState.RETRY_WAIT,
         TaskState.MANUAL_REVIEW,
@@ -25,10 +28,24 @@ VALID_TRANSITIONS: dict[TaskState, Set[TaskState]] = {
         TaskState.INTERRUPTED,
         TaskState.FAILED,
     },
-    TaskState.RETRY_WAIT: {TaskState.READY, TaskState.CANCELLED, TaskState.FAILED},
-    TaskState.RECONCILING: {TaskState.COMPLETED, TaskState.READY, TaskState.MANUAL_REVIEW, TaskState.CANCELLED, TaskState.FAILED},
+    TaskState.SENDING: {
+        TaskState.VERIFYING,
+        TaskState.COMPLETED,
+        TaskState.RECONCILING,
+        TaskState.FAILED,
+        TaskState.INTERRUPTED,
+    },
+    TaskState.VERIFYING: {
+        TaskState.COMPLETED,
+        TaskState.RECONCILING,
+        TaskState.FAILED,
+        TaskState.INTERRUPTED,
+        TaskState.MANUAL_REVIEW,
+    },
+    TaskState.RETRY_WAIT: {TaskState.READY, TaskState.CANCELLED, TaskState.FAILED, TaskState.MANUAL_REVIEW},
+    TaskState.RECONCILING: {TaskState.COMPLETED, TaskState.READY, TaskState.MANUAL_REVIEW, TaskState.CANCELLED, TaskState.FAILED, TaskState.RETRY_WAIT},
     TaskState.INTERRUPTED: {TaskState.RECONCILING, TaskState.READY, TaskState.MANUAL_REVIEW, TaskState.CANCELLED, TaskState.QUEUED},
-    TaskState.MANUAL_REVIEW: {TaskState.READY, TaskState.CANCELLED, TaskState.SKIPPED, TaskState.COMPLETED},
+    TaskState.MANUAL_REVIEW: {TaskState.READY, TaskState.CANCELLED, TaskState.SKIPPED, TaskState.COMPLETED, TaskState.FAILED},
     TaskState.COMPLETED: set(),
     TaskState.SKIPPED: set(),
     TaskState.CANCELLED: set(),
@@ -201,18 +218,26 @@ class TaskRepository(BaseRepository):
         task_id: str,
         worker_id: str,
         lock_token: str,
+        lease_duration_seconds: int = 120,
     ) -> bool:
         """
         Atomically claim a task for execution by a worker.
         Only succeeds if task is in READY or QUEUED state and not already locked.
+        Sets both lock_token and lease fields atomically.
         """
-        now_iso = utc_now_iso()
+        now = datetime.now(timezone.utc)
+        now_iso = now.isoformat()
+        expires_iso = (now + timedelta(seconds=lease_duration_seconds)).isoformat()
         query = """
             UPDATE tasks SET
                 status = ?,
                 worker_id = ?,
                 lock_token = ?,
                 locked_at = ?,
+                lease_id = ?,
+                lease_owner = ?,
+                lease_acquired_at = ?,
+                lease_expires_at = ?,
                 started_at = COALESCE(started_at, ?),
                 attempt_count = attempt_count + 1,
                 updated_at = ?
@@ -228,6 +253,10 @@ class TaskRepository(BaseRepository):
                     worker_id,
                     lock_token,
                     now_iso,
+                    lock_token,
+                    worker_id,
+                    now_iso,
+                    expires_iso,
                     now_iso,
                     now_iso,
                     task_id,
@@ -250,12 +279,15 @@ class TaskRepository(BaseRepository):
             return cursor.rowcount > 0
 
     def unlock_task(self, task_id: str) -> bool:
-        """Unconditionally release a task lock (e.g. on worker crash recovery)."""
+        """Unconditionally release a task lock and lease (e.g. on worker crash recovery)."""
         now_iso = utc_now_iso()
         query = """
             UPDATE tasks SET
                 lock_token = NULL,
                 locked_at = NULL,
+                lease_id = NULL,
+                lease_owner = NULL,
+                lease_expires_at = NULL,
                 updated_at = ?
             WHERE id = ?;
         """
@@ -303,6 +335,154 @@ class TaskRepository(BaseRepository):
             cursor = conn.execute(query, (now_iso,))
             return cursor.rowcount
 
+    def acquire_lease(
+        self,
+        task_id: str,
+        worker_id: str,
+        lease_duration_seconds: int = 120,
+    ) -> Optional[str]:
+        """
+        Atomically acquire a persistent lease on a task for a worker.
+        Only succeeds if:
+        1. Task is in READY or QUEUED state and lease is unowned/expired, OR
+        2. Previous lease on the task has expired.
+        Returns the unique lease_id on success, None on failure.
+        """
+        now = datetime.now(timezone.utc)
+        now_iso = now.isoformat()
+        expires_iso = (now + timedelta(seconds=lease_duration_seconds)).isoformat()
+        lease_id = generate_id("LEASE")
+
+        query = """
+            UPDATE tasks SET
+                status = 'RUNNING',
+                worker_id = ?,
+                lock_token = COALESCE(lock_token, ?),
+                locked_at = COALESCE(locked_at, ?),
+                lease_id = ?,
+                lease_owner = ?,
+                lease_acquired_at = ?,
+                lease_expires_at = ?,
+                started_at = COALESCE(started_at, ?),
+                attempt_count = attempt_count + 1,
+                updated_at = ?
+            WHERE id = ?
+              AND (
+                    (status IN ('READY', 'QUEUED') AND (lease_expires_at IS NULL OR lease_expires_at < ?))
+                 OR (lease_expires_at IS NOT NULL AND lease_expires_at < ?)
+              );
+        """
+        with self.db.transaction() as conn:
+            cursor = conn.execute(
+                query,
+                (
+                    worker_id,
+                    lease_id,
+                    now_iso,
+                    lease_id,
+                    worker_id,
+                    now_iso,
+                    expires_iso,
+                    now_iso,
+                    now_iso,
+                    task_id,
+                    now_iso,
+                    now_iso,
+                ),
+            )
+            if cursor.rowcount > 0:
+                return lease_id
+        return None
+
+    def renew_lease(
+        self,
+        task_id: str,
+        lease_id: str,
+        worker_id: str,
+        lease_duration_seconds: int = 120,
+    ) -> bool:
+        """Renew an actively held lease. Only the lease owner can renew."""
+        now = datetime.now(timezone.utc)
+        now_iso = now.isoformat()
+        expires_iso = (now + timedelta(seconds=lease_duration_seconds)).isoformat()
+
+        query = """
+            UPDATE tasks SET
+                lease_expires_at = ?,
+                updated_at = ?
+            WHERE id = ? AND lease_id = ? AND lease_owner = ?;
+        """
+        with self.db.transaction() as conn:
+            cursor = conn.execute(query, (expires_iso, now_iso, task_id, lease_id, worker_id))
+            return cursor.rowcount > 0
+
+    def release_lease(
+        self,
+        task_id: str,
+        lease_id: str,
+        worker_id: str,
+    ) -> bool:
+        """Release a held task lease. Only the lease owner can release."""
+        now_iso = utc_now_iso()
+        query = """
+            UPDATE tasks SET
+                lease_id = NULL,
+                lease_owner = NULL,
+                lease_expires_at = NULL,
+                updated_at = ?
+            WHERE id = ? AND lease_id = ? AND lease_owner = ?;
+        """
+        with self.db.transaction() as conn:
+            cursor = conn.execute(query, (now_iso, task_id, lease_id, worker_id))
+            return cursor.rowcount > 0
+
+    def is_lease_valid(
+        self,
+        task_id: str,
+        lease_id: str,
+        worker_id: Optional[str] = None,
+    ) -> bool:
+        """Check whether the lease is active and optionally owned by worker_id."""
+        now_iso = utc_now_iso()
+        conn = self.db.get_connection()
+        if worker_id is not None:
+            cursor = conn.execute(
+                """
+                SELECT id FROM tasks
+                WHERE id = ?
+                  AND lease_id = ?
+                  AND lease_owner = ?
+                  AND lease_expires_at > ?;
+                """,
+                (task_id, lease_id, worker_id, now_iso),
+            )
+        else:
+            cursor = conn.execute(
+                """
+                SELECT id FROM tasks
+                WHERE id = ?
+                  AND lease_id = ?
+                  AND lease_expires_at > ?;
+                """,
+                (task_id, lease_id, now_iso),
+            )
+        return cursor.fetchone() is not None
+
+    def recover_expired_leases(self) -> List[Task]:
+        """Find tasks whose lease has expired and return them."""
+        now_iso = utc_now_iso()
+        conn = self.db.get_connection()
+        cursor = conn.execute(
+            """
+            SELECT * FROM tasks
+            WHERE lease_expires_at IS NOT NULL
+              AND lease_expires_at < ?
+              AND status IN ('RUNNING', 'SENDING', 'VERIFYING');
+            """,
+            (now_iso,),
+        )
+        return [self._row_to_task(row) for row in cursor.fetchall()]
+
     def count_by_status(self) -> dict[str, int]:
         """Count tasks grouped by status."""
         conn = self.db.get_connection()
@@ -310,6 +490,7 @@ class TaskRepository(BaseRepository):
         return {row[0]: row[1] for row in cursor.fetchall()}
 
     def _row_to_task(self, row: sqlite3.Row) -> Task:
+        keys = row.keys() if hasattr(row, "keys") else []
         return Task(
             id=row["id"],
             contact_id=row["contact_id"],
@@ -325,6 +506,11 @@ class TaskRepository(BaseRepository):
             last_error_id=row["last_error_id"],
             lock_token=row["lock_token"],
             locked_at=row["locked_at"],
+            lease_id=row["lease_id"] if "lease_id" in keys else None,
+            lease_owner=row["lease_owner"] if "lease_owner" in keys else None,
+            lease_acquired_at=row["lease_acquired_at"] if "lease_acquired_at" in keys else None,
+            lease_expires_at=row["lease_expires_at"] if "lease_expires_at" in keys else None,
+            message_hash=row["message_hash"] if "message_hash" in keys else None,
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )

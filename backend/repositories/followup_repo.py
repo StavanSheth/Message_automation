@@ -82,6 +82,15 @@ class FollowupRepository(BaseRepository):
             cursor = conn.execute(query, (now_iso, cancel_reason, now_iso, contact_id))
             return cursor.rowcount
 
+    def cancel(self, followup_id: str, reason: str = "CANCELLED") -> bool:
+        """Cancel a specific followup record."""
+        return self.update_status(
+            followup_id=followup_id,
+            status=FollowupStatus.CANCELLED,
+            cancelled_at=utc_now_iso(),
+            cancel_reason=reason,
+        )
+
     def update_status(
         self,
         followup_id: str,

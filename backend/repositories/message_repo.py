@@ -85,6 +85,30 @@ class MessageRepository(BaseRepository):
         )
         return [self._row_to_message(row) for row in cursor.fetchall()]
 
+    def has_confirmed_sent_message(self, task_id: str) -> bool:
+        """Check if this task already has a confirmed SENT message in the database."""
+        conn = self.db.get_connection()
+        cursor = conn.execute(
+            "SELECT id FROM messages WHERE task_id = ? AND status = 'SENT' LIMIT 1;",
+            (task_id,),
+        )
+        return cursor.fetchone() is not None
+
+    def is_in_reconciliation(self, task_id: str) -> bool:
+        """Check if any message for this task is in RECONCILIATION status."""
+        conn = self.db.get_connection()
+        cursor = conn.execute(
+            "SELECT id FROM messages WHERE task_id = ? AND status = 'RECONCILIATION' LIMIT 1;",
+            (task_id,),
+        )
+        return cursor.fetchone() is not None
+
+    @staticmethod
+    def calculate_message_hash(body: str) -> str:
+        """Compute deterministic SHA-256 hash of message body for deduplication."""
+        import hashlib
+        return hashlib.sha256(body.strip().encode("utf-8")).hexdigest()
+
     def _row_to_message(self, row: sqlite3.Row) -> Message:
         return Message(
             id=row["id"],

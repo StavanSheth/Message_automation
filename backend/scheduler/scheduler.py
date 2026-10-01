@@ -10,6 +10,8 @@ from backend.repositories.followup_repo import FollowupRepository
 from backend.repositories.contact_repo import ContactRepository
 from backend.scheduler.task_dispatcher import TaskDispatcher
 from backend.scheduler.retry_scheduler import RetryScheduler
+from backend.application.followup_service import FollowupService
+from backend.repositories.message_repo import MessageRepository
 from backend.events.correlation import generate_id
 from backend.events.logger import get_logger
 
@@ -20,7 +22,7 @@ class Scheduler:
     """
     Central automation scheduler coordinating:
     - Thread-controlled background loop with clean shutdown.
-    - Due follow-up evaluation and atomic task materialization.
+    - Due follow-up evaluation and atomic task materialization via FollowupService.
     - Prerequisite task validation before scheduling follow-ups.
     - Automatic cancellation when contact replies.
     - Retry evaluation and backoff via RetryScheduler.
@@ -38,6 +40,8 @@ class Scheduler:
         poll_interval: float = 1.0,
         task_dispatcher: Optional[TaskDispatcher] = None,
         retry_scheduler: Optional[RetryScheduler] = None,
+        followup_service: Optional[FollowupService] = None,
+        message_repo: Optional[MessageRepository] = None,
     ):
         self.task_repo = task_repo
         self.followup_repo = followup_repo
@@ -45,9 +49,16 @@ class Scheduler:
         self.worker_manager = worker_manager
         self.recovery_service = recovery_service
         self.poll_interval = poll_interval
+        self.message_repo = message_repo or MessageRepository(task_repo.db)
 
         self.task_dispatcher = task_dispatcher or TaskDispatcher(task_repo, worker_manager)
         self.retry_scheduler = retry_scheduler or RetryScheduler(task_repo)
+        self.followup_service = followup_service or FollowupService(
+            followup_repo=self.followup_repo,
+            task_repo=self.task_repo,
+            contact_repo=self.contact_repo,
+            message_repo=self.message_repo,
+        )
 
         self.is_paused: bool = False
         self.is_running: bool = False
@@ -142,54 +153,26 @@ class Scheduler:
         except Exception as e:
             logger.warning(f"Error evaluating retries in tick: {e}")
 
-        # ── Step 3: Materialize due follow-ups atomically ───────────
-        due_followups = self.followup_repo.list_due(now_iso)
-        for fu in due_followups:
-            contact = self.contact_repo.get_by_id(fu.contact_id)
-            if not contact or contact.replied_status == RepliedStatus.YES:
-                self.followup_repo.update_status(fu.id, FollowupStatus.CANCELLED, cancel_reason="REPLIED")
-                continue
-
-            # Verify prerequisite completion before task instantiation
-            if fu.sequence == 1:
-                prereq = self.task_repo.get_by_contact_and_type(fu.contact_id, TaskType.MESSAGE, sequence=0)
-                if prereq and prereq.status != TaskState.COMPLETED:
-                    continue
-            elif fu.sequence == 2:
-                prereq = self.task_repo.get_by_contact_and_type(fu.contact_id, TaskType.FOLLOW_UP_1, sequence=1)
-                if prereq and prereq.status != TaskState.COMPLETED:
-                    continue
-
-            # Atomic claim for materialization prevents concurrency race conditions
-            if not self.followup_repo.claim_for_materialization(fu.id):
-                continue
-
-            task_type = TaskType.FOLLOW_UP_1 if fu.sequence == 1 else TaskType.FOLLOW_UP_2
-            existing = self.task_repo.get_by_contact_and_type(fu.contact_id, task_type, sequence=fu.sequence)
-            if not existing:
-                try:
-                    new_task = Task(
-                        id=generate_id("TASK"),
-                        contact_id=fu.contact_id,
-                        type=task_type,
-                        sequence=fu.sequence,
-                        status=TaskState.READY,
-                        scheduled_at=now_iso,
-                        created_at=now_iso,
-                        updated_at=now_iso,
-                    )
-                    self.task_repo.create(new_task)
-                except DuplicateTaskError:
-                    pass
+        # ── Step 3: Materialize due follow-ups atomically via FollowupService ──
+        try:
+            self.followup_service.materialize_due_followups()
+        except Exception as e:
+            logger.warning(f"Error materializing follow-ups in tick: {e}")
 
         # ── Step 4: Query ready tasks ──────────────────────────────
         ready_tasks = self.task_repo.list_ready()
 
-        # ── Step 5: Dispatch to workers via TaskDispatcher ─────────
-        try:
-            self.task_dispatcher.dispatch_ready_tasks()
-        except Exception as e:
-            logger.warning(f"Error dispatching tasks via TaskDispatcher: {e}")
+        # ── Step 5: Dispatch to workers ─────────
+        if self.worker_manager and hasattr(self.worker_manager, "process_tasks"):
+            try:
+                self.worker_manager.process_tasks()
+            except Exception as e:
+                logger.warning(f"Error dispatching tasks to worker manager: {e}")
+        elif self.task_dispatcher:
+            try:
+                self.task_dispatcher.dispatch_ready_tasks()
+            except Exception as e:
+                logger.warning(f"Error dispatching tasks via TaskDispatcher: {e}")
 
         return ready_tasks
 

@@ -86,6 +86,11 @@ class Task:
     last_error_id: Optional[str] = None
     lock_token: Optional[str] = None
     locked_at: Optional[str] = None
+    lease_id: Optional[str] = None
+    lease_owner: Optional[str] = None
+    lease_acquired_at: Optional[str] = None
+    lease_expires_at: Optional[str] = None
+    message_hash: Optional[str] = None
     created_at: str = field(default_factory=utc_now_iso)
     updated_at: str = field(default_factory=utc_now_iso)
 
@@ -197,12 +202,53 @@ class Event:
     entity_type: Optional[str] = None
     entity_id: Optional[str] = None
     payload_json: Optional[str] = None
+    task_id: Optional[str] = None
+    worker_id: Optional[str] = None
+    session_id: Optional[str] = None
+    correlation_id: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
         d["level"] = self.level.value if isinstance(self.level, EventLevel) else self.level
         d["event_code"] = self.event_code.value if isinstance(self.event_code, EventCode) else self.event_code
         return d
+
+
+@dataclass
+class ReconciliationRecord:
+    id: str
+    task_id: str
+    message_id: Optional[str] = None
+    worker_id: Optional[str] = None
+    session_id: Optional[str] = None
+    state: str = "PENDING"
+    reason: str = ""
+    observed_state: Optional[str] = None
+    resolution: Optional[str] = None
+    resolution_source: Optional[str] = None
+    created_at: str = field(default_factory=utc_now_iso)
+    updated_at: str = field(default_factory=utc_now_iso)
+    resolved_at: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class ManualReviewItem:
+    id: str
+    task_id: str
+    contact_id: str
+    reason: str
+    current_state: str
+    evidence_json: Optional[str] = None
+    recommended_action: Optional[str] = None
+    status: str = "PENDING"
+    created_at: str = field(default_factory=utc_now_iso)
+    resolved_at: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
 
 
 @dataclass
