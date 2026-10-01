@@ -28,8 +28,14 @@ def test_url_validation_excel_online():
     assert err is None
 
 
-def test_url_validation_unsupported_domain():
-    valid, err = validate_spreadsheet_url("https://malicious-site.com/not_a_sheet")
+def test_url_validation_arbitrary_domain_allowed():
+    valid, err = validate_spreadsheet_url("https://my-custom-portal.org/sheet")
+    assert valid == UrlValidationResult.VALID_SOURCE
+    assert err is None
+
+
+def test_url_validation_unsupported_domain_with_whitelist():
+    valid, err = validate_spreadsheet_url("https://malicious-site.com/not_a_sheet", enforce_whitelist=True)
     assert valid == UrlValidationResult.UNSUPPORTED_SOURCE
     assert err is not None
 

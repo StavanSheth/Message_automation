@@ -387,8 +387,13 @@ class TestUrlValidators:
         result, err = validate_spreadsheet_url("http://localhost:8080/sheet")
         assert result == UrlValidationResult.VALID_SOURCE
 
-    def test_unsupported_domain(self):
+    def test_arbitrary_domain_allowed_by_default(self):
         result, err = validate_spreadsheet_url("https://random-site.org/sheet")
+        assert result == UrlValidationResult.VALID_SOURCE
+        assert err is None
+
+    def test_unsupported_domain_with_whitelist(self):
+        result, err = validate_spreadsheet_url("https://random-site.org/sheet", enforce_whitelist=True)
         assert result == UrlValidationResult.UNSUPPORTED_SOURCE
 
     def test_empty_url(self):

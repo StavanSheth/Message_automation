@@ -12,10 +12,11 @@ def test_migrations_create_complete_schema(tmp_path):
     db = DatabaseManager(db_file)
     runner = MigrationRunner(db)
 
-    # First run should apply 001_initial_schema.sql
+    # First run should apply pending migrations
     applied = runner.apply_pending()
-    assert len(applied) == 1
+    assert len(applied) == 2
     assert "001_initial_schema.sql" in applied[0]
+    assert "002_source_records_unique.sql" in applied[1]
 
     # Verify all expected tables exist
     assert runner.verify_schema() is True
@@ -122,3 +123,29 @@ def test_connection_lifecycle_and_close(tmp_path):
     assert conn2 is not None
     assert conn2 is not conn1
     db.close()
+
+
+def test_source_records_unique_index_enforced(tmp_path):
+    """Verify that source_records enforces unique (source_identifier, row_index)."""
+    db_file = str(tmp_path / "unique_srec.db")
+    db = DatabaseManager(db_file)
+    MigrationRunner(db).apply_pending()
+
+    with db.transaction() as conn:
+        conn.execute(
+            """
+            INSERT INTO source_records (id, source_type, source_identifier, row_index, raw_data_json, checksum, last_synced_at, created_at, updated_at)
+            VALUES ('s1', 'LOCAL_XLSX', 'sheet_1', 2, '{}', 'chk1', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+            """
+        )
+
+    # Attempting to insert duplicate source_identifier + row_index must raise IntegrityError
+    with pytest.raises(sqlite3.IntegrityError):
+        with db.transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO source_records (id, source_type, source_identifier, row_index, raw_data_json, checksum, last_synced_at, created_at, updated_at)
+                VALUES ('s2', 'LOCAL_XLSX', 'sheet_1', 2, '{}', 'chk2', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+                """
+            )
+

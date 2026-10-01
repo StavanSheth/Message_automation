@@ -122,6 +122,15 @@ class TaskRepository(BaseRepository):
             return None
         return self._row_to_task(row)
 
+    def get_by_contact_id(self, contact_id: str) -> List[Task]:
+        """Fetch all tasks for a contact."""
+        conn = self.db.get_connection()
+        cursor = conn.execute(
+            "SELECT * FROM tasks WHERE contact_id = ? ORDER BY sequence ASC, created_at ASC;",
+            (contact_id,),
+        )
+        return [self._row_to_task(row) for row in cursor.fetchall()]
+
     def update_state(
         self,
         task_id: str,

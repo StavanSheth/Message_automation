@@ -54,15 +54,32 @@ class DatabaseManager:
 
     @contextmanager
     def transaction(self) -> Generator[sqlite3.Connection, None, None]:
-        """Context manager for atomic transaction block."""
+        """Context manager for atomic transaction block with nested savepoint support."""
         conn = self.get_connection()
-        try:
+        depth = getattr(self._local, "tx_depth", 0)
+        self._local.tx_depth = depth + 1
+
+        if depth == 0:
             conn.execute("BEGIN IMMEDIATE;")
-            yield conn
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
+            try:
+                yield conn
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                self._local.tx_depth = 0
+        else:
+            savepoint_name = f"sp_{depth}"
+            conn.execute(f"SAVEPOINT {savepoint_name};")
+            try:
+                yield conn
+                conn.execute(f"RELEASE SAVEPOINT {savepoint_name};")
+            except Exception:
+                conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint_name};")
+                raise
+            finally:
+                self._local.tx_depth = depth
 
     def execute(self, query: str, params: tuple = ()) -> sqlite3.Cursor:
         """Execute a parameterized query using the thread connection."""

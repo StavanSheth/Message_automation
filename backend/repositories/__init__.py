@@ -9,3 +9,7 @@ from backend.repositories.event_repo import EventRepository
 from backend.repositories.error_repo import ErrorRepository
 from backend.repositories.settings_repo import SettingsRepository
 from backend.repositories.sync_run_repo import SyncRunRepository
+from backend.repositories.automation_run_repo import AutomationRunRepository
+from backend.repositories.worker_repo import WorkerRepository
+from backend.repositories.browser_session_repo import BrowserSessionRepository
+from backend.repositories.verification_result_repo import VerificationResultRepository

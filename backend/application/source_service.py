@@ -133,7 +133,16 @@ class SourceService:
             adapter.close()
 
     def _process_source_row(self, adapter: SourceAdapter, row: SourceRow, sync_run: SyncRun) -> None:
-        """Process a single source row with conflict detection."""
+        """Process a single source row atomically within a database transaction."""
+        db = getattr(self.contact_repo, "db", None)
+        if db:
+            with db.transaction():
+                self._execute_source_row(adapter, row, sync_run)
+        else:
+            self._execute_source_row(adapter, row, sync_run)
+
+    def _execute_source_row(self, adapter: SourceAdapter, row: SourceRow, sync_run: SyncRun) -> None:
+        """Internal execution of single source row import (contact, source_record, task, message, followups)."""
         existing_record = self.source_record_repo.get_by_source_and_row(
             adapter.source_identifier, row.row_index
         )

@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS source_records (
     FOREIGN KEY (contact_id) REFERENCES contacts(id) ON DELETE SET NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_source_records_ident_row ON source_records(source_identifier, row_index);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_source_records_ident_row ON source_records(source_identifier, row_index);
 
 -- Tasks table
 CREATE TABLE IF NOT EXISTS tasks (
