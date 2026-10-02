@@ -138,18 +138,30 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         path = self.path.split("?")[0]
 
         if path == "/api/control/pause":
+            curr = self.app.control_service.state if self.app.control_service else None
+            if curr and hasattr(curr, "value") and curr.value == "PAUSED":
+                self._send_json(200, {"success": True, "message": "System is already paused"})
+                return
             res = self.app.pause("Dashboard operator requested pause")
-            self._send_json(200, {"success": res, "message": "System pause command issued"})
+            self._send_json(200, {"success": res, "message": "System paused" if res else "Could not pause system"})
             return
 
         if path == "/api/control/resume":
+            curr = self.app.control_service.state if self.app.control_service else None
+            if curr and hasattr(curr, "value") and curr.value == "RUNNING":
+                self._send_json(200, {"success": True, "message": "System is already running"})
+                return
             res = self.app.resume("Dashboard operator requested resume")
-            self._send_json(200, {"success": res, "message": "System resume command issued"})
+            self._send_json(200, {"success": res, "message": "System resumed" if res else "Could not resume system"})
             return
 
         if path == "/api/control/drain":
+            curr = self.app.control_service.state if self.app.control_service else None
+            if curr and hasattr(curr, "value") and curr.value == "DRAINING":
+                self._send_json(200, {"success": True, "message": "System is already draining"})
+                return
             res = self.app.control_service.drain("Dashboard operator requested drain") if self.app.control_service else False
-            self._send_json(200, {"success": res, "message": "System drain command issued"})
+            self._send_json(200, {"success": res, "message": "System draining started" if res else "Could not drain system"})
             return
 
         if path == "/api/scheduler/tick":
