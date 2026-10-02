@@ -287,6 +287,41 @@ class BrowserManager:
             "sessions": {k: v.__dict__ for k, v in results.items()},
         }
 
+    def is_healthy(self) -> bool:
+        """Check if all currently tracked active browser sessions are responsive and alive."""
+        for sess in self._active_sessions.values():
+            if not sess.is_alive():
+                return False
+        return True
+
+    def recover_session(
+        self,
+        worker_id: str,
+        account_id: Optional[str] = None,
+        profile_name: Optional[str] = None,
+    ) -> BrowserSessionInstance:
+        """
+        Self-healing session recovery:
+        1. Stop broken / crashed session.
+        2. Create replacement session for worker.
+        3. Validate account ownership and return new session.
+        """
+        if worker_id in self._worker_session_map:
+            old_sess_id = self._worker_session_map[worker_id]
+            self.stop_session(old_sess_id)
+        sess = self.create_session(
+            worker_id=worker_id,
+            account_id=account_id,
+            profile_name=profile_name,
+        )
+        if not sess.is_alive():
+            sess.start()
+        return sess
+
+    def close_all(self) -> None:
+        """Alias for shutdown to cleanly close all sessions."""
+        self.shutdown()
+
     def shutdown(self) -> None:
         """Stop all sessions and tear down lifecycle manager. Idempotent."""
         logger.info("Shutting down BrowserManager and all active sessions")

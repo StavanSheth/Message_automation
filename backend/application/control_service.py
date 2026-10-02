@@ -13,16 +13,16 @@ from backend.events.logger import get_logger
 
 logger = get_logger("control_service")
 
-# Permitted state transitions according to the state machine (Section 3.2)
+# Permitted state transitions according to the state machine (Section 3.2 & Section 6)
 ALLOWED_STATE_TRANSITIONS = {
     SystemState.STOPPED: {SystemState.STARTING},
     SystemState.STARTING: {SystemState.RUNNING, SystemState.DEGRADED, SystemState.STOPPED},
-    SystemState.RUNNING: {SystemState.PAUSED, SystemState.DRAINING, SystemState.DEGRADED, SystemState.STOPPING},
+    SystemState.RUNNING: {SystemState.PAUSED, SystemState.DRAINING, SystemState.DEGRADED, SystemState.STOPPING, SystemState.STARTING},
     SystemState.PAUSED: {SystemState.RUNNING, SystemState.DRAINING, SystemState.STOPPING, SystemState.DEGRADED, SystemState.MANUAL_INTERVENTION},
     SystemState.DRAINING: {SystemState.STOPPING, SystemState.STOPPED},
-    SystemState.DEGRADED: {SystemState.RUNNING, SystemState.MANUAL_INTERVENTION, SystemState.STOPPING},
-    SystemState.MANUAL_INTERVENTION: {SystemState.RUNNING, SystemState.STOPPING, SystemState.STOPPED},
-    SystemState.STOPPING: {SystemState.STOPPED},
+    SystemState.DEGRADED: {SystemState.RUNNING, SystemState.MANUAL_INTERVENTION, SystemState.STOPPING, SystemState.STARTING},
+    SystemState.MANUAL_INTERVENTION: {SystemState.RUNNING, SystemState.STOPPING, SystemState.STOPPED, SystemState.STARTING},
+    SystemState.STOPPING: {SystemState.STOPPED, SystemState.STARTING},
 }
 
 
@@ -62,9 +62,38 @@ class ApplicationControlService:
 
         self._lock = threading.Lock()
 
-        # Recover persisted state on startup if available, rather than assuming STOPPED
+        # Recover persisted state on startup with crash detection
         recovered_state = self.system_control_repo.get_state() if self.system_control_repo else None
-        self._state: SystemState = recovered_state or SystemState.STOPPED
+        has_live_workers = (
+            self.worker_manager is not None
+            and hasattr(self.worker_manager, "active_count")
+            and self.worker_manager.active_count > 0
+        )
+        if recovered_state == SystemState.RUNNING and not has_live_workers:
+            logger.warning("Startup detected abnormal shutdown: state was RUNNING without live runtime; marking DEGRADED for recovery")
+            self._state = SystemState.DEGRADED
+            if self.system_control_repo:
+                try:
+                    self.system_control_repo.set_state(SystemState.DEGRADED)
+                except Exception:
+                    pass
+        elif recovered_state == SystemState.STARTING and not has_live_workers:
+            logger.warning("Startup detected abnormal shutdown during STARTING; marking DEGRADED for recovery")
+            self._state = SystemState.DEGRADED
+            if self.system_control_repo:
+                try:
+                    self.system_control_repo.set_state(SystemState.DEGRADED)
+                except Exception:
+                    pass
+        elif recovered_state == SystemState.STOPPING:
+            self._state = SystemState.STOPPED
+            if self.system_control_repo:
+                try:
+                    self.system_control_repo.set_state(SystemState.STOPPED)
+                except Exception:
+                    pass
+        else:
+            self._state = recovered_state or SystemState.STOPPED
 
     @property
     def state(self) -> SystemState:

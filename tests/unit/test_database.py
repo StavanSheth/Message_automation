@@ -14,7 +14,7 @@ def test_migrations_create_complete_schema(tmp_path):
 
     # First run should apply pending migrations
     applied = runner.apply_pending()
-    assert len(applied) == 9
+    assert len(applied) == 10
     assert "001_initial_schema.sql" in applied[0]
     assert "002_source_records_unique.sql" in applied[1]
     assert "003_phase3_leases_reconciliations.sql" in applied[2]
@@ -24,6 +24,7 @@ def test_migrations_create_complete_schema(tmp_path):
     assert "007_phase4_ownership_and_state_integrity.sql" in applied[6]
     assert "008_phase4_final_integrity.sql" in applied[7]
     assert "009_phase4_relational_ownership_integrity.sql" in applied[8]
+    assert "010_phase5_hardening.sql" in applied[9]
 
     # Verify all expected tables exist
     assert runner.verify_schema() is True

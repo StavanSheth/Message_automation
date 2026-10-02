@@ -203,9 +203,27 @@ class DefaultWorkerManager(WorkerManager):
         worker = self._workers.get(worker_id)
         if not worker:
             return None
+
+        # Safe restart check: if current task is in SENDING or VERIFYING, route to reconciliation first
+        if worker.current_task_id:
+            try:
+                t = self.task_repo.get_by_id(worker.current_task_id)
+                if t and t.status in (TaskState.SENDING, TaskState.VERIFYING):
+                    if hasattr(self, "reconciliation_service") and self.reconciliation_service:
+                        self.reconciliation_service.enter_reconciliation(
+                            task_id=t.id,
+                            worker_id=worker.worker_id,
+                            reason="worker_restart_during_send",
+                        )
+                    else:
+                        self.task_repo.update_state(t.id, TaskState.MANUAL_REVIEW, worker_id=worker.worker_id, enforce_transition=False)
+            except Exception as e:
+                logger.warning(f"Error checking task before worker {worker_id} restart: {e}")
+
         mode = worker.mode
+        account_id = getattr(worker, "account_id", None)
         self.stop_worker(worker_id)
-        return self.start_worker(mode=mode)
+        return self.start_worker(mode=mode, account_id=account_id)
 
     def recover_stale_workers(self) -> int:
         """Find and recover stale workers (in-memory and persisted) by marking them crashed, releasing locks, and cleaning up."""

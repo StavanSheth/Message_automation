@@ -1,6 +1,7 @@
 """Authoritative execution application service coordinating task execution lifecycle, idempotency, and reconciliation."""
 
 import hashlib
+import threading
 from typing import Optional, Dict, Any, Set
 from backend.domain.models import Task, utc_now_iso
 from backend.domain.enums import TaskState, MessageState, EventCode, EventLevel, ErrorCode
@@ -60,6 +61,7 @@ class ExecutionService:
             except Exception:
                 self.auth_validator = None
         self._active_execution_keys: Set[str] = set()
+        self._lock = threading.Lock()
 
         db = getattr(task_repo, "db", None)
 
@@ -329,15 +331,19 @@ class ExecutionService:
         )
         exec_key = new_identity.execution_key
 
-        if exec_key in self._active_execution_keys:
-            logger.warning(f"Duplicate in-flight execution for key {exec_key}; rejecting")
-            return False
+        with self._lock:
+            if exec_key in self._active_execution_keys:
+                logger.warning(f"Duplicate in-flight execution for key {exec_key}; rejecting")
+                return False
+            self._active_execution_keys.add(exec_key)
 
         # Persistent DB check
         if self.execution_identity_repo:
             try:
                 existing = self.execution_identity_repo.get(exec_key)
                 if existing:
+                    with self._lock:
+                        self._active_execution_keys.discard(exec_key)
                     if existing.state == "SENT":
                         logger.info(f"Execution {exec_key} already confirmed SENT in DB; marking COMPLETED without resending")
                         self.task_repo.update_state(task.id, TaskState.COMPLETED, worker_id=worker_id, enforce_transition=False)
@@ -355,13 +361,13 @@ class ExecutionService:
             except Exception as e:
                 logger.debug(f"Could not check execution identity in DB: {e}")
 
-        self._active_execution_keys.add(exec_key)
         if self.execution_identity_repo:
             try:
                 self.execution_identity_repo.create(new_identity)
             except Exception as e:
                 logger.warning(f"Execution identity creation conflict for {exec_key}: {e}; aborting duplicate concurrent execution")
-                self._active_execution_keys.discard(exec_key)
+                with self._lock:
+                    self._active_execution_keys.discard(exec_key)
                 return False
 
         try:
@@ -472,7 +478,8 @@ class ExecutionService:
                             pass
                 return False
         finally:
-            self._active_execution_keys.discard(exec_key)
+            with self._lock:
+                self._active_execution_keys.discard(exec_key)
 
     @staticmethod
     def _compute_execution_key(task: Task, message_hash: str = "", attempt: int = 1) -> str:

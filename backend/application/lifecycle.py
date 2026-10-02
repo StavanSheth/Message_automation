@@ -158,6 +158,17 @@ class ApplicationLifecycleManager:
         except Exception as e:
             summary["manual_review_items"] = 0
 
+        # 8. Clean up stale browser sessions from prior crashed run
+        try:
+            from backend.domain.models import utc_now_iso
+            now_iso = utc_now_iso()
+            with self.db.transaction() as conn:
+                cur = conn.execute("UPDATE browser_sessions SET status = 'CLOSED', closed_at = ? WHERE status IN ('OPEN', 'ACTIVE');", (now_iso,))
+                summary["stale_sessions_closed"] = cur.rowcount
+        except Exception as e:
+            logger.debug(f"Error checking browser sessions during startup: {e}")
+            summary["stale_sessions_closed"] = 0
+
         if self.event_repo:
             self.event_repo.record(
                 event_code=EventCode.TASK_RECOVERED,

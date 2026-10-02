@@ -27,6 +27,7 @@ class EventRepository(BaseRepository):
         worker_id: Optional[str] = None,
         session_id: Optional[str] = None,
         correlation_id: Optional[str] = None,
+        account_id: Optional[str] = None,
     ) -> Event:
         """Append an event to the persistent event log and notify subscribers."""
         if event_id is None:
@@ -39,6 +40,7 @@ class EventRepository(BaseRepository):
             worker_id = worker_id or payload.get("worker_id")
             session_id = session_id or payload.get("session_id")
             correlation_id = correlation_id or payload.get("correlation_id")
+            account_id = account_id or payload.get("account_id")
 
         if task_id is None and entity_type == "task":
             task_id = entity_id
@@ -47,28 +49,55 @@ class EventRepository(BaseRepository):
         level_val = level.value if isinstance(level, EventLevel) else level
         code_val = event_code.value if isinstance(event_code, EventCode) else event_code
 
-        query = """
-            INSERT INTO events (
-                id, timestamp, level, category, entity_type, entity_id,
-                event_code, payload_json, task_id, worker_id, session_id, correlation_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-        """
-        params = (
-            event_id,
-            timestamp,
-            level_val,
-            category,
-            entity_type,
-            entity_id,
-            code_val,
-            payload_json,
-            task_id,
-            worker_id,
-            session_id,
-            correlation_id,
-        )
         with self.db.transaction() as conn:
-            conn.execute(query, params)
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO events (
+                        id, timestamp, level, category, entity_type, entity_id,
+                        event_code, payload_json, task_id, worker_id, session_id, correlation_id, account_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    """,
+                    (
+                        event_id,
+                        timestamp,
+                        level_val,
+                        category,
+                        entity_type,
+                        entity_id,
+                        code_val,
+                        payload_json,
+                        task_id,
+                        worker_id,
+                        session_id,
+                        correlation_id,
+                        account_id,
+                    ),
+                )
+            except sqlite3.OperationalError:
+                # Fallback if migration 010 has not yet added account_id column
+                conn.execute(
+                    """
+                    INSERT INTO events (
+                        id, timestamp, level, category, entity_type, entity_id,
+                        event_code, payload_json, task_id, worker_id, session_id, correlation_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    """,
+                    (
+                        event_id,
+                        timestamp,
+                        level_val,
+                        category,
+                        entity_type,
+                        entity_id,
+                        code_val,
+                        payload_json,
+                        task_id,
+                        worker_id,
+                        session_id,
+                        correlation_id,
+                    ),
+                )
 
         event = Event(
             id=event_id,
@@ -83,6 +112,7 @@ class EventRepository(BaseRepository):
             worker_id=worker_id,
             session_id=session_id,
             correlation_id=correlation_id,
+            account_id=account_id,
         )
 
         # Notify event bus
@@ -99,6 +129,7 @@ class EventRepository(BaseRepository):
         worker_id: Optional[str] = None,
         session_id: Optional[str] = None,
         correlation_id: Optional[str] = None,
+        account_id: Optional[str] = None,
         limit: int = 100,
         offset: int = 0,
     ) -> List[Event]:
@@ -131,6 +162,9 @@ class EventRepository(BaseRepository):
         if correlation_id:
             clauses.append("correlation_id = ?")
             params.append(correlation_id)
+        if account_id:
+            clauses.append("account_id = ?")
+            params.append(account_id)
 
         where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         query = f"SELECT * FROM events {where_sql} ORDER BY timestamp DESC LIMIT ? OFFSET ?;"
@@ -161,5 +195,6 @@ class EventRepository(BaseRepository):
             worker_id=row["worker_id"] if "worker_id" in keys else None,
             session_id=row["session_id"] if "session_id" in keys else None,
             correlation_id=row["correlation_id"] if "correlation_id" in keys else None,
+            account_id=row["account_id"] if "account_id" in keys else None,
         )
 

@@ -75,7 +75,7 @@ class BrowserSessionInstance:
             logger.info("Browser session started", session_id=self.session_id, worker_id=self.worker_id)
         except Exception as e:
             self.status = SessionStatus.CRASHED
-            logger.error(f"Failed to start browser session: {e}", session_id=self.session_id)
+            logger.error(f"Failed to start browser session {self.session_id}: {e}")
             if isinstance(e, BrowserException):
                 raise
             raise BrowserSessionError(f"Session startup failed: {e}", code=ErrorCode.BROWSER_CRASH) from e

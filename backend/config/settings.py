@@ -114,6 +114,10 @@ class AppSettings:
             raise ValidationError(f"session_validation_timeout must be positive, got {self.session_validation_timeout}")
         if self.lease_renew_interval <= 0:
             raise ValidationError(f"lease_renew_interval must be positive, got {self.lease_renew_interval}")
+        if self.lease_renew_interval >= self.lease_timeout:
+            raise ValidationError(
+                f"lease_renew_interval ({self.lease_renew_interval}) must be less than lease_timeout ({self.lease_timeout})"
+            )
         if self.max_diagnostic_artifacts <= 0:
             raise ValidationError(f"max_diagnostic_artifacts must be positive, got {self.max_diagnostic_artifacts}")
         if self.manual_review_timeout <= 0:

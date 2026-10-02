@@ -233,6 +233,7 @@ class Event:
     worker_id: Optional[str] = None
     session_id: Optional[str] = None
     correlation_id: Optional[str] = None
+    account_id: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
