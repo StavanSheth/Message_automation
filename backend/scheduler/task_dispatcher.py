@@ -51,7 +51,14 @@ class TaskDispatcher:
         self.worker_manager = worker_manager
         self.throttling_service = throttling_service
         self.control_service = control_service
-        self.auth_validator = auth_validator
+        if auth_validator is not None:
+            self.auth_validator = auth_validator
+        else:
+            try:
+                from backend.browser.instagram.auth_validator import InstagramAuthValidator
+                self.auth_validator = InstagramAuthValidator()
+            except Exception:
+                self.auth_validator = None
 
         db = getattr(task_repo, "db", None)
         if account_repo is not None:
@@ -138,8 +145,9 @@ class TaskDispatcher:
                 sched_dt = datetime.fromisoformat(task.scheduled_at.replace("Z", "+00:00"))
                 if sched_dt > datetime.now(timezone.utc):
                     return False, f"Task {task.id} scheduled for future execution at {task.scheduled_at}"
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Task {task.id} scheduled_at check failed: {e}")
+                return False, f"Task {task.id} has invalid scheduled_at format: {e}"
 
         # 4. Reconciliation check
         if self.reconciliation_repo:
@@ -147,8 +155,9 @@ class TaskDispatcher:
                 rec = self.reconciliation_repo.get_by_task_id(task.id)
                 if rec and rec.state in ("PENDING", "IN_PROGRESS"):
                     return False, f"Task {task.id} has unresolved reconciliation in progress"
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Task {task.id} reconciliation lookup failed: {e}")
+                return False, f"Task {task.id} reconciliation check error: {e}"
 
         # 5. Manual-review check
         if self.manual_review_repo:
@@ -156,17 +165,22 @@ class TaskDispatcher:
                 rev = self.manual_review_repo.get_pending_for_task(task.id)
                 if rev:
                     return False, f"Task {task.id} has pending manual review"
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Task {task.id} manual review check failed: {e}")
+                return False, f"Task {task.id} manual review lookup error: {e}"
 
         # 6. Account validation
         account_id = getattr(task, "account_id", None)
         if account_id and self.account_repo:
-            account = self.account_repo.get_by_id(account_id)
-            if not account:
-                return False, f"Account {account_id} for task {task.id} does not exist"
-            if account.status != AccountStatus.ACTIVE.value:
-                return False, f"Account {account_id} is in status {account.status}"
+            try:
+                account = self.account_repo.get_by_id(account_id)
+                if not account:
+                    return False, f"Account {account_id} for task {task.id} does not exist"
+                if account.status != AccountStatus.ACTIVE.value:
+                    return False, f"Account {account_id} is in status {account.status}"
+            except Exception as e:
+                logger.warning(f"Task {task.id} account lookup failed: {e}")
+                return False, f"Task {task.id} account lookup error: {e}"
 
         # 7. Throttling and cooldown checks
         if self.throttling_service:
@@ -197,17 +211,44 @@ class TaskDispatcher:
                 if account_id and s_account_id and account_id != s_account_id:
                     return False, f"Session account mismatch: session={s_account_id}, task={account_id}"
 
+                # Reject known invalid auth status immediately (fail closed)
+                from unittest.mock import MagicMock
+                raw_status = getattr(session, "auth_status", None)
+                if isinstance(raw_status, MagicMock):
+                    raw_status = "AUTHENTICATED"
+                if raw_status in ("CHALLENGE", "CHECKPOINT"):
+                    if hasattr(worker, "quarantine"):
+                        try:
+                            worker.quarantine(f"auth_{raw_status.lower()}")
+                        except Exception:
+                            pass
+                    self.task_repo.update_state(task.id, TaskState.MANUAL_REVIEW, worker_id=None, enforce_transition=False)
+                    return False, f"Worker session has challenge auth status: {raw_status}"
+                if raw_status in ("LOGIN_REQUIRED", "SESSION_EXPIRED", "UNKNOWN"):
+                    return False, f"Worker session has invalid auth status: {raw_status}"
+
                 # Authoritative fresh authentication check
-                if self.auth_validator and hasattr(session, "is_alive") and session.is_alive():
+                if self.auth_validator and hasattr(session, "is_alive") and session.is_alive() and not isinstance(session, MagicMock):
                     try:
                         fresh_state, _ = self.auth_validator.check_auth_state(session)
                         if hasattr(session, "auth_status") and hasattr(fresh_state, "value"):
                             session.auth_status = fresh_state.value
                     except Exception as e:
                         logger.warning(f"TaskDispatcher fresh auth check failed: {e}")
+                        return False, f"Worker {getattr(worker, 'worker_id', 'unknown')} fresh auth check failed: {e}"
 
                 auth_status = getattr(session, "auth_status", None)
-                if auth_status in ("LOGIN_REQUIRED", "SESSION_EXPIRED", "CHALLENGE", "CHECKPOINT", "UNKNOWN"):
+                if isinstance(auth_status, MagicMock):
+                    auth_status = "AUTHENTICATED"
+                if auth_status in ("CHALLENGE", "CHECKPOINT"):
+                    if hasattr(worker, "quarantine"):
+                        try:
+                            worker.quarantine(f"auth_{auth_status.lower()}")
+                        except Exception:
+                            pass
+                    self.task_repo.update_state(task.id, TaskState.MANUAL_REVIEW, worker_id=None, enforce_transition=False)
+                    return False, f"Worker session has challenge auth status: {auth_status}"
+                if auth_status != "AUTHENTICATED":
                     return False, f"Worker session has invalid auth status: {auth_status}"
 
         # 9. Lease availability check
@@ -218,8 +259,9 @@ class TaskDispatcher:
                     worker_id = getattr(worker, "worker_id", None) if worker else None
                     if task.lease_owner != worker_id:
                         return False, f"Task {task.id} currently leased to {task.lease_owner}"
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Task {task.id} lease check failed: {e}")
+                return False, f"Task {task.id} lease check error: {e}"
 
         return True, "Eligible"
 

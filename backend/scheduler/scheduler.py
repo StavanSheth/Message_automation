@@ -45,6 +45,7 @@ class Scheduler:
         control_service: Optional[Any] = None,
         throttling_service: Optional[Any] = None,
         retention_service: Optional[Any] = None,
+        auth_validator: Optional[Any] = None,
     ):
         self.task_repo = task_repo
         self.followup_repo = followup_repo
@@ -59,11 +60,21 @@ class Scheduler:
         self._last_retention_sweep_at: float = 0.0
         self.retention_interval_seconds: int = getattr(get_settings(), "retention_interval_seconds", 86400)
 
+        if auth_validator is not None:
+            self.auth_validator = auth_validator
+        else:
+            try:
+                from backend.browser.instagram.auth_validator import InstagramAuthValidator
+                self.auth_validator = InstagramAuthValidator()
+            except Exception:
+                self.auth_validator = None
+
         self.task_dispatcher = task_dispatcher or TaskDispatcher(
             task_repo=task_repo,
             worker_manager=worker_manager,
             throttling_service=throttling_service,
             control_service=control_service,
+            auth_validator=self.auth_validator,
         )
         self.retry_scheduler = retry_scheduler or RetryScheduler(task_repo)
         if followup_service is not None:

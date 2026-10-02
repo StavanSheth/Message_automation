@@ -1,6 +1,7 @@
 """Deterministic SQLite migration runner."""
 
 import os
+import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Tuple
@@ -9,7 +10,7 @@ from backend.database.manager import DatabaseManager
 
 
 def split_sql_statements(sql: str) -> List[str]:
-    """Split SQL script into discrete statements, filtering full-line comments."""
+    """Split SQL script into discrete statements, filtering full-line comments and respecting triggers."""
     statements: List[str] = []
     current: List[str] = []
     for line in sql.splitlines():
@@ -17,10 +18,10 @@ def split_sql_statements(sql: str) -> List[str]:
         if stripped.startswith("--"):
             continue
         current.append(line)
-        if stripped.endswith(";"):
-            stmt = "\n".join(current).strip()
-            if stmt and stmt != ";":
-                statements.append(stmt)
+        candidate = "\n".join(current).strip()
+        if stripped.endswith(";") and sqlite3.complete_statement(candidate):
+            if candidate and candidate != ";":
+                statements.append(candidate)
             current = []
     if current:
         stmt = "\n".join(current).strip()

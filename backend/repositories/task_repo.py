@@ -114,10 +114,13 @@ class TaskRepository(BaseRepository):
             try:
                 conn.execute(query, params)
             except sqlite3.IntegrityError as e:
-                raise DuplicateTaskError(
-                    f"Duplicate task constraint violated: {e}",
-                    task_id=task.id,
-                )
+                err_msg = str(e).upper()
+                if "UNIQUE" in err_msg or "PRIMARY KEY" in err_msg:
+                    raise DuplicateTaskError(
+                        f"Duplicate task constraint violated: {e}",
+                        task_id=task.id,
+                    )
+                raise
 
         return task
 

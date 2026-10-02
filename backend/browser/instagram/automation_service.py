@@ -253,16 +253,12 @@ class InstagramAutomationService:
             self.task_repo.update_state(current_task.id, TaskState.RETRY_WAIT, worker_id=worker_id)
             return False
 
-        # ── 2c. Authentication Validation (Fail-Closed) ──────────
+        # ── 2c. Mandatory Authoritative Fresh Authentication Validation (Fail-Closed) ──
         try:
             from backend.domain.enums import SessionAuthState
-            if getattr(session, "auth_status", None) == "AUTHENTICATED":
-                auth_state = SessionAuthState.AUTHENTICATED
-                auth_reason = "authoritative_fresh_validation"
-            else:
-                auth_state, auth_reason = self.auth_validator.check_auth_state(session)
-                if hasattr(session, "auth_status") and hasattr(auth_state, "value"):
-                    session.auth_status = auth_state.value
+            auth_state, auth_reason = self.auth_validator.check_auth_state(session)
+            if hasattr(session, "auth_status") and hasattr(auth_state, "value"):
+                session.auth_status = auth_state.value
             if auth_state == SessionAuthState.LOGIN_REQUIRED:
                 self._record_error(current_task, ErrorCode.SESSION_EXPIRED, f"Session requires login: {auth_reason}", retryable=False, worker_id=worker_id)
                 self.event_repo.record(

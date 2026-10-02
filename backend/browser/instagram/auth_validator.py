@@ -19,7 +19,11 @@ class InstagramAuthValidator:
         if not session or not session.is_alive():
             return SessionAuthState.UNKNOWN, "session_not_alive"
 
-        result = session.evaluate(
+        if not hasattr(session, "evaluate"):
+            return SessionAuthState.UNKNOWN, "session_cannot_evaluate"
+
+        try:
+            result = session.evaluate(
             """() => {
                 const url = window.location.href || '';
                 const body = document.body ? (document.body.innerText || '').substring(0, 3000) : '';
@@ -57,6 +61,9 @@ class InstagramAuthValidator:
                 return { state: 'UNKNOWN', reason: 'unrecognized_auth_state' };
             }"""
         )
+        except Exception as e:
+            logger.warning(f"Session evaluate failed during auth check: {e}")
+            return SessionAuthState.UNKNOWN, f"evaluation_failed: {e}"
 
         if not isinstance(result, dict):
             return SessionAuthState.UNKNOWN, "evaluation_failed"
