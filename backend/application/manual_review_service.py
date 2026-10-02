@@ -47,6 +47,10 @@ class ManualReviewService:
         """List all pending items requiring operator attention."""
         return self.manual_review_repo.list_pending()
 
+    def get(self, item_id: str) -> Optional[ManualReviewItem]:
+        """Alias for get_item."""
+        return self.get_item(item_id)
+
     def get_item(self, item_id: str) -> Optional[ManualReviewItem]:
         """Retrieve a specific manual review item by ID without mutating state."""
         return self.manual_review_repo.get_by_id(item_id)
@@ -56,6 +60,8 @@ class ManualReviewService:
         item_id: str,
         resolution: str,
         operator_notes: str = "",
+        operator: str = "operator",
+        evidence: str = "",
     ) -> bool:
         """
         Explicitly resolve a manual review item with one of:
@@ -87,6 +93,7 @@ class ManualReviewService:
 
         elif resolution_clean == "RETRY_ALLOWED":
             if task:
+                # Reset task safely to READY for normal scheduling. Does NOT direct send.
                 self.task_repo.update_state(task.id, TaskState.READY, enforce_transition=False)
 
         elif resolution_clean == "CANCELLED":
@@ -95,8 +102,14 @@ class ManualReviewService:
             if task:
                 self.task_repo.update_state(task.id, TaskState.CANCELLED, enforce_transition=False)
 
-        # Mark review record resolved
-        self.manual_review_repo.resolve(item_id, status=f"RESOLVED_{resolution_clean}")
+        # Mark review record resolved with explicit metadata
+        self.manual_review_repo.resolve(
+            item_id,
+            status="RESOLVED",
+            resolution=resolution_clean,
+            resolved_by=operator,
+            resolution_notes=operator_notes or evidence,
+        )
 
         if self.event_repo:
             self.event_repo.record(
@@ -108,17 +121,36 @@ class ManualReviewService:
                 payload={
                     "item_id": item_id,
                     "resolution": resolution_clean,
+                    "operator": operator,
                     "notes": operator_notes,
+                    "evidence": evidence,
                 },
             )
 
-        logger.info(f"Manual review {item_id} resolved with {resolution_clean}: {operator_notes}")
+        logger.info(f"Manual review {item_id} resolved with {resolution_clean} by {operator}: {operator_notes}")
         return True
+
+    def confirm_sent(self, item_id: str, operator: str = "operator", notes: str = "", evidence: str = "") -> bool:
+        """Confirm message was sent; marks task COMPLETED."""
+        return self.resolve(item_id, "CONFIRMED_SENT", operator_notes=notes, operator=operator, evidence=evidence)
+
+    def confirm_not_sent(self, item_id: str, operator: str = "operator", notes: str = "", evidence: str = "") -> bool:
+        """Confirm message was not sent; marks task FAILED."""
+        return self.resolve(item_id, "CONFIRMED_NOT_SENT", operator_notes=notes, operator=operator, evidence=evidence)
+
+    def allow_retry(self, item_id: str, operator: str = "operator", notes: str = "", evidence: str = "") -> bool:
+        """Safely allow task to be re-evaluated by scheduler; resets state to READY."""
+        return self.resolve(item_id, "RETRY_ALLOWED", operator_notes=notes, operator=operator, evidence=evidence)
+
+    def cancel(self, item_id: str, operator: str = "operator", notes: str = "", evidence: str = "") -> bool:
+        """Cancel task and message."""
+        return self.resolve(item_id, "CANCELLED", operator_notes=notes, operator=operator, evidence=evidence)
 
     def reject(self, item_id: str, reason: str = "") -> bool:
         """Reject and cancel task under review."""
-        return self.resolve(item_id, "CANCELLED", operator_notes=reason)
+        return self.cancel(item_id, notes=reason)
 
     def retry_if_safe(self, item_id: str, notes: str = "") -> bool:
         """Allow task retry if confirmed no message was delivered."""
-        return self.resolve(item_id, "RETRY_ALLOWED", operator_notes=notes)
+        return self.allow_retry(item_id, notes=notes)
+

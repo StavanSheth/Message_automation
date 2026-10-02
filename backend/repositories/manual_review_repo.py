@@ -66,17 +66,52 @@ class ManualReviewRepository(BaseRepository):
         )
         return [self._row_to_item(row) for row in cursor.fetchall()]
 
-    def resolve(self, item_id: str, status: str = "RESOLVED") -> bool:
-        """Mark a manual review item as resolved or dismissed."""
+    def get_pending_for_task(self, task_id: str) -> Optional[ManualReviewItem]:
+        """Fetch pending manual review item for a task if one exists."""
+        conn = self.db.get_connection()
+        cursor = conn.execute(
+            "SELECT * FROM manual_reviews WHERE task_id = ? AND status = 'PENDING' ORDER BY created_at DESC LIMIT 1;",
+            (task_id,),
+        )
+        row = cursor.fetchone()
+        return self._row_to_item(row) if row else None
+
+    def resolve(
+        self,
+        item_id: str,
+        status: str = "RESOLVED",
+        resolution: Optional[str] = None,
+        resolved_by: Optional[str] = None,
+        resolution_notes: Optional[str] = None,
+    ) -> bool:
+        """Mark a manual review item as resolved with explicit resolution details."""
         now_iso = utc_now_iso()
-        query = """
-            UPDATE manual_reviews SET
-                status = ?,
-                resolved_at = ?
-            WHERE id = ?;
-        """
+        has_resolution_col = False
+        try:
+            conn = self.db.get_connection()
+            cur = conn.execute("PRAGMA table_info(manual_reviews);")
+            cols = {r[1] for r in cur.fetchall()}
+            has_resolution_col = "resolution" in cols
+        except Exception:
+            pass
+
+        if has_resolution_col:
+            query = """
+                UPDATE manual_reviews SET
+                    status = ?,
+                    resolved_at = ?,
+                    resolution = coalesce(?, resolution),
+                    resolved_by = coalesce(?, resolved_by),
+                    resolution_notes = coalesce(?, resolution_notes)
+                WHERE id = ?;
+            """
+            params = (status, now_iso, resolution, resolved_by, resolution_notes, item_id)
+        else:
+            query = "UPDATE manual_reviews SET status = ?, resolved_at = ? WHERE id = ?;"
+            params = (status, now_iso, item_id)
+
         with self.db.transaction() as conn:
-            cursor = conn.execute(query, (status, now_iso, item_id))
+            cursor = conn.execute(query, params)
             return cursor.rowcount > 0
 
     def count_by_status(self) -> Dict[str, int]:
@@ -86,6 +121,7 @@ class ManualReviewRepository(BaseRepository):
         return {row[0]: row[1] for row in cursor.fetchall()}
 
     def _row_to_item(self, row: sqlite3.Row) -> ManualReviewItem:
+        cols = row.keys() if hasattr(row, "keys") else []
         return ManualReviewItem(
             id=row["id"],
             task_id=row["task_id"],
@@ -97,4 +133,8 @@ class ManualReviewRepository(BaseRepository):
             status=row["status"],
             created_at=row["created_at"],
             resolved_at=row["resolved_at"],
+            resolution=row["resolution"] if "resolution" in cols else None,
+            resolved_by=row["resolved_by"] if "resolved_by" in cols else None,
+            resolution_notes=row["resolution_notes"] if "resolution_notes" in cols else None,
         )
+

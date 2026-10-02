@@ -39,6 +39,9 @@ class ExecutionService:
         manual_review_repo: Optional[ManualReviewRepository] = None,
         event_repo: Optional[EventRepository] = None,
         execution_identity_repo: Optional[Any] = None,
+        throttling_service: Optional[Any] = None,
+        worker_repo: Optional[Any] = None,
+        account_repo: Optional[Any] = None,
     ):
         self.task_repo = task_repo
         self.message_repo = message_repo
@@ -47,13 +50,15 @@ class ExecutionService:
         self.event_repo = event_repo
         self._active_execution_keys: Set[str] = set()
 
+        db = getattr(task_repo, "db", None)
+
         if reconciliation_service is not None:
             self.reconciliation_service = reconciliation_service
         elif hasattr(automation_service, "reconciliation_service") and automation_service.reconciliation_service is not None:
             self.reconciliation_service = automation_service.reconciliation_service
-        elif hasattr(task_repo, "db"):
+        elif db:
             from backend.repositories.reconciliation_repo import ReconciliationRepository
-            rec_repo = ReconciliationRepository(task_repo.db)
+            rec_repo = ReconciliationRepository(db)
             self.reconciliation_service = ReconciliationService(
                 reconciliation_repo=rec_repo,
                 task_repo=task_repo,
@@ -66,8 +71,33 @@ class ExecutionService:
 
         from backend.repositories.execution_identity_repo import ExecutionIdentityRepository
         self.execution_identity_repo = execution_identity_repo or (
-            ExecutionIdentityRepository(self.task_repo.db) if hasattr(self.task_repo, "db") else None
+            ExecutionIdentityRepository(db) if db else None
         )
+
+        # Worker & Account repos for ownership checks
+        if worker_repo is not None:
+            self.worker_repo = worker_repo
+        elif db:
+            from backend.repositories.worker_repo import WorkerRepository
+            try:
+                self.worker_repo = WorkerRepository(db)
+            except Exception:
+                self.worker_repo = None
+        else:
+            self.worker_repo = None
+
+        if account_repo is not None:
+            self.account_repo = account_repo
+        elif db:
+            from backend.repositories.account_repo import AccountRepository
+            try:
+                self.account_repo = AccountRepository(db)
+            except Exception:
+                self.account_repo = None
+        else:
+            self.account_repo = None
+
+        self.throttling_service = throttling_service
 
     def execute_task(
         self,
@@ -78,7 +108,14 @@ class ExecutionService:
         correlation_id: Optional[str] = None,
     ) -> bool:
         """
-        Authoritatively execute a messaging task with complete safety guarantees.
+        Authoritatively execute a messaging task with complete safety guarantees:
+        1. Task existence and state eligibility
+        2. Lease ownership and validity
+        3. Account and session ownership match
+        4. Authentication lifecycle validation
+        5. Throttling and cooldown checks
+        6. Deterministic execution identity and deduplication
+        7. Reconciliation backlog validation
         """
         corr_id = correlation_id or generate_id("CORR")
         now_iso = utc_now_iso()
@@ -90,8 +127,12 @@ class ExecutionService:
             return False
         task_id = task.id
 
-        # ── 1. Strict Lease Validation ───────────────────────────
-        # A production worker execution path strictly requires a valid held lease
+        # ── 1. Task State Check ──────────────────────────────────
+        if task.status in (TaskState.RECONCILING, TaskState.MANUAL_REVIEW, TaskState.CANCELLED, TaskState.COMPLETED, TaskState.FAILED):
+            logger.error(f"Execution rejected: task {task_id} has ineligible status {task.status.value}")
+            return False
+
+        # ── 2. Strict Lease Validation ───────────────────────────
         if not lease_id or not self.task_repo.is_lease_valid(task_id, lease_id, worker_id=worker_id):
             logger.error(f"Execution rejected: no valid active lease held by worker {worker_id} for task {task_id} (lease_id={lease_id})")
             if self.event_repo:
@@ -107,6 +148,50 @@ class ExecutionService:
                     payload={"worker_id": worker_id, "lease_id": lease_id, "correlation_id": corr_id},
                 )
             return False
+
+        # ── 3. Account and Session Ownership Check ───────────────
+        task_account_id = getattr(task, "account_id", None)
+        session_account_id = getattr(session, "account_id", None)
+        if task_account_id and session_account_id and task_account_id != session_account_id:
+            logger.error(f"Execution rejected: task account {task_account_id} != session account {session_account_id}")
+            return False
+
+        if self.worker_repo:
+            try:
+                worker_rec = self.worker_repo.get_by_id(worker_id)
+                if worker_rec:
+                    worker_account_id = getattr(worker_rec, "account_id", None)
+                    if task_account_id and worker_account_id and task_account_id != worker_account_id:
+                        logger.error(f"Execution rejected: task account {task_account_id} != worker account {worker_account_id}")
+                        return False
+                    worker_session_id = getattr(worker_rec, "session_id", None)
+                    session_id = getattr(session, "session_id", None)
+                    if worker_session_id and session_id and worker_session_id != session_id:
+                        logger.error(f"Execution rejected: worker session {worker_session_id} != session {session_id}")
+                        return False
+            except Exception as e:
+                logger.debug(f"Worker repo ownership lookup skipped: {e}")
+
+        # ── 4. Authentication Lifecycle Check ────────────────────
+        auth_status = getattr(session, "auth_status", None)
+        if auth_status:
+            if auth_status in ("LOGIN_REQUIRED", "SESSION_EXPIRED"):
+                logger.error(f"Execution rejected: session authentication invalid ({auth_status})")
+                return False
+            if auth_status in ("CHALLENGE", "CHECKPOINT"):
+                logger.error(f"Execution rejected: checkpoint/challenge detected ({auth_status}); routing to manual review")
+                self.task_repo.update_state(task.id, TaskState.MANUAL_REVIEW, worker_id=worker_id, enforce_transition=False)
+                return False
+            if auth_status == "UNKNOWN":
+                logger.error("Execution rejected: unknown authentication status; failing closed")
+                return False
+
+        # ── 5. Throttling and Cooldown Checks ────────────────────
+        if self.throttling_service:
+            allowed, reason = self.throttling_service.can_dispatch(account_id=task_account_id, worker_id=worker_id)
+            if not allowed:
+                logger.warning(f"Execution rejected by throttling: {reason}")
+                return False
 
         # ── 2. Deterministic Execution Identity & Deduplication ───
         msg = self.message_repo.get_by_task_id(task.id)
@@ -209,6 +294,11 @@ class ExecutionService:
                     correlation_id=corr_id,
                 )
                 if success:
+                    if self.throttling_service:
+                        try:
+                            self.throttling_service.record_send(account_id=task_account_id, worker_id=worker_id)
+                        except Exception as e:
+                            logger.debug(f"Could not record send in throttling_service: {e}")
                     latest_t = self.task_repo.get_by_id(task.id)
                     if latest_t and latest_t.status != TaskState.COMPLETED:
                         self.task_repo.update_state(task.id, TaskState.COMPLETED, worker_id=worker_id, enforce_transition=False)

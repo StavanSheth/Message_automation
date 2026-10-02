@@ -86,8 +86,8 @@ class TaskRepository(BaseRepository):
                     scheduled_at, started_at, completed_at, attempt_count,
                     worker_id, last_error_id, lock_token, locked_at,
                     lease_id, lease_owner, lease_expires_at,
-                    created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    created_at, updated_at, account_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
             """
             params = (
                 task.id,
@@ -109,6 +109,7 @@ class TaskRepository(BaseRepository):
                 task.lease_expires_at,
                 task.created_at,
                 task.updated_at,
+                getattr(task, "account_id", None),
             )
             try:
                 conn.execute(query, params)
@@ -545,4 +546,5 @@ class TaskRepository(BaseRepository):
             message_hash=row["message_hash"] if "message_hash" in keys else None,
             created_at=row["created_at"],
             updated_at=row["updated_at"],
+            account_id=row["account_id"] if "account_id" in keys else None,
         )

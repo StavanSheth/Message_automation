@@ -161,22 +161,19 @@ class TaskExecutor:
             return False
 
         try:
-            if self.execution_service:
-                lease_id = current.lease_id or current.lock_token
-                success = self.execution_service.execute_task(
-                    task_id=current.id,
-                    session=session,
-                    worker_id=context.worker_id or current.worker_id or "",
-                    lease_id=lease_id,
-                    correlation_id=context.correlation_id,
-                )
-            else:
-                success = self.instagram_service.execute_messaging_task(
-                    task=current,
-                    session=session,
-                    worker_id=context.worker_id,
-                    correlation_id=context.correlation_id,
-                )
+            if not self.execution_service:
+                logger.error("ExecutionService is mandatory for message task execution; bypass rejected")
+                self._handle_failure(current, context, ErrorCode.INTERNAL_ERROR, "ExecutionService gateway required", retryable=False)
+                return False
+
+            lease_id = current.lease_id or current.lock_token
+            success = self.execution_service.execute_task(
+                task_id=current.id,
+                session=session,
+                worker_id=context.worker_id or current.worker_id or "",
+                lease_id=lease_id,
+                correlation_id=context.correlation_id,
+            )
 
             # Re-verify task ownership before considering execution finished
             verify = self.task_repo.get_by_id(task.id)

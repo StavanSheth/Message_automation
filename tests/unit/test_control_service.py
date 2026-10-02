@@ -84,3 +84,47 @@ def test_invalid_state_transitions(control_env):
     assert svc._transition_to(SystemState.PAUSED) is False
     assert svc._transition_to(SystemState.DRAINING) is False
     assert svc.state == SystemState.STOPPED
+
+
+def test_start_failure_routes_to_degraded(tmp_path):
+    db = DatabaseManager(str(tmp_path / "test_ctrl_fail.db"))
+    MigrationRunner(db).apply_pending()
+
+    lifecycle_mock = MagicMock()
+    lifecycle_mock.startup_recovery.side_effect = RuntimeError("DB corruption during recovery")
+
+    svc = ApplicationControlService(lifecycle_manager=lifecycle_mock)
+    res = svc.start()
+    assert res["status"] == "error"
+    assert svc.state == SystemState.DEGRADED
+
+
+def test_resume_escalates_to_manual_intervention_on_challenge(tmp_path):
+    db = DatabaseManager(str(tmp_path / "test_ctrl_challenge.db"))
+    MigrationRunner(db).apply_pending()
+
+    lifecycle_mock = MagicMock()
+    lifecycle_mock.startup_recovery.return_value = {"status": "ok"}
+    scheduler_mock = MagicMock()
+
+    # Worker manager with a quarantined worker due to checkpoint
+    worker_mgr_mock = MagicMock()
+    worker_mgr_mock.active_count = 1
+    worker_rec = MagicMock()
+    worker_rec.quarantine_reason = "Instagram checkpoint encountered"
+    worker_mgr_mock.list_workers.return_value = [worker_rec]
+
+    svc = ApplicationControlService(
+        lifecycle_manager=lifecycle_mock,
+        scheduler=scheduler_mock,
+        worker_manager=worker_mgr_mock,
+    )
+    svc.start()
+    svc.pause("Investigation")
+    assert svc.state == SystemState.PAUSED
+
+    # Attempting to resume with an unresolved challenge must escalate to MANUAL_INTERVENTION
+    resumed = svc.resume()
+    assert resumed is False
+    assert svc.state == SystemState.MANUAL_INTERVENTION
+

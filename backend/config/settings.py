@@ -92,10 +92,12 @@ class AppSettings:
             raise ValidationError(f"worker_stale_timeout must be positive, got {self.worker_stale_timeout}")
         if self.spreadsheet_navigation_timeout <= 0:
             raise ValidationError(f"spreadsheet_navigation_timeout must be positive, got {self.spreadsheet_navigation_timeout}")
-        if self.spreadsheet_operation_timeout <= 0:
-            raise ValidationError(f"spreadsheet_operation_timeout must be positive, got {self.spreadsheet_operation_timeout}")
         if self.lease_timeout <= 0:
             raise ValidationError(f"lease_timeout must be positive, got {self.lease_timeout}")
+        if self.worker_heartbeat_interval >= self.lease_timeout:
+            raise ValidationError(
+                f"worker_heartbeat_interval ({self.worker_heartbeat_interval}) must be less than lease_timeout ({self.lease_timeout})"
+            )
         if self.reconciliation_timeout <= 0:
             raise ValidationError(f"reconciliation_timeout must be positive, got {self.reconciliation_timeout}")
         if self.diagnostic_artifact_retention_days < 0:

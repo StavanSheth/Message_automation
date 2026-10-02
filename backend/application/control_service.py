@@ -18,7 +18,7 @@ ALLOWED_STATE_TRANSITIONS = {
     SystemState.STOPPED: {SystemState.STARTING},
     SystemState.STARTING: {SystemState.RUNNING, SystemState.DEGRADED, SystemState.STOPPED},
     SystemState.RUNNING: {SystemState.PAUSED, SystemState.DRAINING, SystemState.DEGRADED, SystemState.STOPPING},
-    SystemState.PAUSED: {SystemState.RUNNING, SystemState.DRAINING, SystemState.STOPPING},
+    SystemState.PAUSED: {SystemState.RUNNING, SystemState.DRAINING, SystemState.STOPPING, SystemState.DEGRADED, SystemState.MANUAL_INTERVENTION},
     SystemState.DRAINING: {SystemState.STOPPING, SystemState.STOPPED},
     SystemState.DEGRADED: {SystemState.RUNNING, SystemState.MANUAL_INTERVENTION, SystemState.STOPPING},
     SystemState.MANUAL_INTERVENTION: {SystemState.RUNNING, SystemState.STOPPING, SystemState.STOPPED},
@@ -42,6 +42,7 @@ class ApplicationControlService:
         browser_manager: Optional[BrowserManager] = None,
         event_repo: Optional[EventRepository] = None,
         settings: Optional[AppSettings] = None,
+        system_control_repo: Optional[Any] = None,
     ):
         self.lifecycle_manager = lifecycle_manager
         self.scheduler = scheduler
@@ -50,8 +51,20 @@ class ApplicationControlService:
         self.event_repo = event_repo
         self.settings = settings or get_settings()
 
-        self._state: SystemState = SystemState.STOPPED
+        # Persistent control repo
+        if system_control_repo is not None:
+            self.system_control_repo = system_control_repo
+        elif hasattr(lifecycle_manager, "db"):
+            from backend.repositories.system_control_repo import SystemControlRepository
+            self.system_control_repo = SystemControlRepository(lifecycle_manager.db)
+        else:
+            self.system_control_repo = None
+
         self._lock = threading.Lock()
+
+        # Recover persisted state on startup if available, rather than assuming STOPPED
+        recovered_state = self.system_control_repo.get_state() if self.system_control_repo else None
+        self._state: SystemState = recovered_state or SystemState.STOPPED
 
     @property
     def state(self) -> SystemState:
@@ -69,6 +82,12 @@ class ApplicationControlService:
             old_state = self._state
             self._state = new_state
 
+        if self.system_control_repo:
+            try:
+                self.system_control_repo.set_state(new_state)
+            except Exception as e:
+                logger.warning(f"Failed to persist system state {new_state.value}: {e}")
+
         logger.info(f"System transitioned: {old_state.value} -> {new_state.value} ({reason})")
         if self.event_repo:
             code_map = {
@@ -77,6 +96,8 @@ class ApplicationControlService:
                 SystemState.PAUSED: EventCode.SYSTEM_PAUSED,
                 SystemState.DRAINING: EventCode.SYSTEM_DRAINING,
                 SystemState.STOPPED: EventCode.SYSTEM_STOPPED,
+                SystemState.DEGRADED: EventCode.TASK_STATE_CHANGED,
+                SystemState.MANUAL_INTERVENTION: EventCode.TASK_STATE_CHANGED,
             }
             code = code_map.get(new_state, EventCode.TASK_STATE_CHANGED)
             self.event_repo.record(
@@ -89,14 +110,15 @@ class ApplicationControlService:
 
     def start(self) -> Dict[str, Any]:
         """
-        Start sequence:
-        1. Validate settings
-        2. Set state -> STARTING
-        3. Run startup recovery
-        4. Start browser capability
-        5. Start workers
-        6. Start scheduler
-        7. Set state -> RUNNING
+        Start sequence (Section 6):
+        1. Set state -> STARTING
+        2. Validate configuration
+        3. Database startup recovery
+        4. Start workers
+        5. Start scheduler
+        6. Validate component health
+        7. If any mandatory component fails -> transition to DEGRADED or STOPPED, NEVER RUNNING.
+        8. If healthy -> transition to RUNNING.
         """
         if not self._transition_to(SystemState.STARTING, "System startup initiated"):
             return {"status": "error", "message": f"Cannot start from state {self.state.value}"}
@@ -110,16 +132,22 @@ class ApplicationControlService:
             return {"status": "error", "message": f"Configuration invalid: {e}"}
 
         # 2. Run startup recovery
-        recovery_summary = self.lifecycle_manager.startup_recovery()
+        try:
+            recovery_summary = self.lifecycle_manager.startup_recovery()
+        except Exception as e:
+            logger.error(f"Startup recovery failed: {e}")
+            self._transition_to(SystemState.DEGRADED, f"Startup recovery failed: {e}")
+            return {"status": "error", "message": f"Recovery failed: {e}"}
 
         # 3. Start workers
         if self.worker_manager:
             try:
-                # Ensure at least one worker started if idle
                 if self.worker_manager.active_count == 0:
                     self.worker_manager.start_worker()
             except Exception as e:
-                logger.warning(f"Error starting initial worker: {e}")
+                logger.error(f"Failed to start initial worker: {e}")
+                self._transition_to(SystemState.DEGRADED, f"Worker startup failed: {e}")
+                return {"status": "error", "message": f"Worker startup failed: {e}"}
 
         # 4. Start scheduler
         if self.scheduler:
@@ -127,7 +155,14 @@ class ApplicationControlService:
                 self.scheduler.resume()
                 self.scheduler.start()
             except Exception as e:
-                logger.warning(f"Error starting scheduler: {e}")
+                logger.error(f"Failed to start scheduler: {e}")
+                self._transition_to(SystemState.DEGRADED, f"Scheduler startup failed: {e}")
+                return {"status": "error", "message": f"Scheduler startup failed: {e}"}
+
+        # 5. Component health validation
+        if self.browser_manager and hasattr(self.browser_manager, "is_healthy") and not self.browser_manager.is_healthy():
+            self._transition_to(SystemState.DEGRADED, "Browser manager reported unhealthy status")
+            return {"status": "degraded", "message": "Browser manager unhealthy"}
 
         self._transition_to(SystemState.RUNNING, "Startup completed successfully")
         return {"status": "ok", "state": self.state.value, "recovery": recovery_summary}
@@ -148,24 +183,51 @@ class ApplicationControlService:
 
     def resume(self, reason: str = "Operator requested resume") -> bool:
         """
-        Resume sequence:
-        - Validate health
-        - Resume scheduler
-        - Set state -> RUNNING.
+        Resume sequence (Section 7):
+        - Validate system state
+        - Validate browser health
+        - Validate worker health and authentication
+        - Check for challenge/checkpoint -> escalate to MANUAL_INTERVENTION if detected
+        - Only resume scheduler after all mandatory checks pass
         """
+        # Validate current state is resumable
+        if self.state not in (SystemState.PAUSED, SystemState.DEGRADED):
+            logger.warning(f"Cannot resume from state {self.state.value}")
+            return False
+
+        # 1. Browser health check
+        if self.browser_manager and hasattr(self.browser_manager, "is_healthy"):
+            if not self.browser_manager.is_healthy():
+                logger.warning("Resume rejected: browser manager is unhealthy")
+                self._transition_to(SystemState.DEGRADED, "Browser manager unhealthy during resume")
+                return False
+
+        # 2. Worker health & challenge/checkpoint inspection
+        if self.worker_manager:
+            for worker_rec in self.worker_manager.list_workers():
+                # If any worker was quarantined for challenge/checkpoint -> escalate to MANUAL_INTERVENTION
+                reason_lower = str(getattr(worker_rec, "quarantine_reason", "") or "").lower()
+                if "challenge" in reason_lower or "checkpoint" in reason_lower:
+                    logger.warning("Resume escalated to MANUAL_INTERVENTION: challenge/checkpoint detected")
+                    self._transition_to(SystemState.MANUAL_INTERVENTION, "Challenge or checkpoint pending resolution")
+                    return False
+
+        # 3. Transition to RUNNING
         if not self._transition_to(SystemState.RUNNING, reason):
             return False
 
+        # 4. Resume scheduler only after state transition succeeds
         if self.scheduler:
             self.scheduler.resume()
         return True
 
     def drain(self, reason: str = "Operator requested drain") -> bool:
         """
-        Drain sequence:
+        Drain sequence (Section 8):
         - Stop accepting new tasks (pause scheduler).
         - Set state -> DRAINING.
-        - Allow safe in-flight tasks to complete.
+        - Drain all worker instances (allow in-flight safe tasks to finish).
+        - Stop workers and transition system -> STOPPED.
         """
         if not self._transition_to(SystemState.DRAINING, reason):
             return False
@@ -175,9 +237,13 @@ class ApplicationControlService:
 
         # Signal workers to drain
         if self.worker_manager:
-            for w in self.worker_manager.list_workers():
-                if hasattr(w, "drain"):
-                    w.drain()
+            if hasattr(self.worker_manager, "drain_all"):
+                self.worker_manager.drain_all(reason)
+            else:
+                for w in getattr(self.worker_manager, "_workers", {}).values():
+                    if hasattr(w, "drain"):
+                        w.drain(reason)
+
         return True
 
     def stop(self, reason: str = "Operator requested stop") -> None:

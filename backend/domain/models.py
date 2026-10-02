@@ -272,6 +272,9 @@ class ManualReviewItem:
     status: str = "PENDING"
     created_at: str = field(default_factory=utc_now_iso)
     resolved_at: Optional[str] = None
+    resolution: Optional[str] = None
+    resolved_by: Optional[str] = None
+    resolution_notes: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

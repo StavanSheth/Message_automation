@@ -47,7 +47,7 @@ class Scheduler:
         self.task_repo = task_repo
         self.followup_repo = followup_repo
         self.contact_repo = contact_repo
-        self.worker_manager = worker_manager
+        self._worker_manager = worker_manager
         self.recovery_service = recovery_service
         self.poll_interval = poll_interval
         self.message_repo = message_repo or MessageRepository(task_repo.db)
@@ -78,6 +78,16 @@ class Scheduler:
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
         self._lock = threading.Lock()
+
+    @property
+    def worker_manager(self) -> Optional[Any]:
+        return self._worker_manager
+
+    @worker_manager.setter
+    def worker_manager(self, value: Optional[Any]) -> None:
+        self._worker_manager = value
+        if hasattr(self, "task_dispatcher") and self.task_dispatcher:
+            self.task_dispatcher.worker_manager = value
 
     def start(self) -> None:
         """Start scheduler background loop thread."""
@@ -179,17 +189,17 @@ class Scheduler:
         # ── Step 4: Query ready tasks ──────────────────────────────
         ready_tasks = self.task_repo.list_ready()
 
-        # ── Step 5: Dispatch to workers ─────────
-        if self.worker_manager and hasattr(self.worker_manager, "process_tasks"):
-            try:
-                self.worker_manager.process_tasks()
-            except Exception as e:
-                logger.warning(f"Error dispatching tasks to worker manager: {e}")
-        elif self.task_dispatcher:
+        # ── Step 5: Dispatch to workers via TaskDispatcher ─────────
+        if self.task_dispatcher:
             try:
                 self.task_dispatcher.dispatch_ready_tasks()
             except Exception as e:
                 logger.warning(f"Error dispatching tasks via TaskDispatcher: {e}")
+        elif self.worker_manager and hasattr(self.worker_manager, "process_tasks"):
+            try:
+                self.worker_manager.process_tasks()
+            except Exception as e:
+                logger.warning(f"Error dispatching tasks to worker manager: {e}")
 
         return ready_tasks
 

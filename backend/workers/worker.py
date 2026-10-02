@@ -378,38 +378,27 @@ class Worker:
             except Exception as e:
                 logger.warning(f"Error releasing lease for task {tid} on worker {self.worker_id}: {e}")
 
-    def process_next_task(self, executor: Any, adapter: Optional[Any] = None) -> bool:
+    def execute_assigned_task(self, task: Task, executor: Any, adapter: Optional[Any] = None) -> bool:
         """
-        Execute next ready task:
-        1. Verify worker is IDLE.
-        2. Query next ready task.
-        3. Atomically claim task.
-        4. Create ExecutionContext.
-        5. Invoke TaskExecutor.
-        6. Release lock and return to IDLE.
-        Guarantees worker is never left stuck in BUSY.
+        Execute an already-authorized, already-claimed task assigned by TaskDispatcher:
+        1. Worker must be holding the active lease for this task.
+        2. Sets up ExecutionContext.
+        3. Executes through ExecutionService / TaskExecutor.
+        4. Releases task lease and returns worker to IDLE.
         """
         with self._lock:
-            if self.status != WorkerStatus.IDLE:
-                return False
-
-        tasks = self.task_repo.list_ready(limit=1)
-        if not tasks:
-            return False
-
-        target_task = tasks[0]
-        if not self.claim_task(target_task.id):
-            return False
+            if self.current_task_id != task.id:
+                if not self.claim_task(task.id):
+                    return False
 
         context = ExecutionContext(
             worker_id=self.worker_id,
             session_id=self.session.session_id if self.session else None,
-            task_id=target_task.id,
+            task_id=task.id,
         )
 
         try:
-            # Re-fetch claimed task to have the fresh locked state
-            claimed_task = self.task_repo.get_by_id(target_task.id) or target_task
+            claimed_task = self.task_repo.get_by_id(task.id) or task
             is_mock = hasattr(executor, "_mock_return_value")
             if adapter is not None and hasattr(executor, "execute_source_sync"):
                 result = executor.execute_source_sync(
@@ -449,11 +438,29 @@ class Worker:
                 )
             return bool(result)
         except Exception as e:
-            logger.error(f"Worker {self.worker_id} encountered error executing task {target_task.id}: {e}")
+            logger.error(f"Worker {self.worker_id} encountered error executing assigned task {task.id}: {e}")
             return False
         finally:
-            # Ensure task lock is released and worker returned to IDLE
             self.release_current_task()
+
+    def process_next_task(self, executor: Any, adapter: Optional[Any] = None) -> bool:
+        """
+        Execute next authorized ready task.
+        Delegates execution to execute_assigned_task once a task is claimed.
+        """
+        with self._lock:
+            if self.status != WorkerStatus.IDLE:
+                return False
+
+        tasks = self.task_repo.list_ready(limit=1)
+        if not tasks:
+            return False
+
+        target_task = tasks[0]
+        if not self.claim_task(target_task.id):
+            return False
+
+        return self.execute_assigned_task(target_task, executor=executor, adapter=adapter)
 
     def to_record(self) -> WorkerRecord:
         with self._lock:

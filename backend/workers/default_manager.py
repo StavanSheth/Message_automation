@@ -172,6 +172,19 @@ class DefaultWorkerManager(WorkerManager):
             return False
         return worker.drain(reason)
 
+    def drain_all(self, reason: str = "System draining") -> int:
+        """
+        Drain all active workers:
+        - Signal each active worker instance to drain
+        - In-flight tasks complete safely
+        """
+        count = 0
+        for worker in list(self._workers.values()):
+            if worker.status not in (WorkerStatus.STOPPED, WorkerStatus.CRASHED):
+                worker.drain(reason)
+                count += 1
+        return count
+
     def quarantine_worker(self, worker_id: str, reason: str = "") -> bool:
         worker = self._workers.get(worker_id)
         if not worker:

@@ -33,6 +33,8 @@ class RetentionService:
         event_retention_days: Optional[int] = None,
         error_retention_days: Optional[int] = None,
         resolved_retention_days: Optional[int] = None,
+        diagnostic_retention_days: Optional[int] = None,
+        execution_identity_retention_days: Optional[int] = None,
     ) -> Dict[str, int]:
         """
         Execute controlled data pruning against historical tables.
@@ -42,10 +44,14 @@ class RetentionService:
         ev_days = event_retention_days if event_retention_days is not None else getattr(self.settings, "event_retention_days", 30)
         err_days = error_retention_days if error_retention_days is not None else getattr(self.settings, "error_retention_days", 30)
         res_days = resolved_retention_days if resolved_retention_days is not None else 30
+        diag_days = diagnostic_retention_days if diagnostic_retention_days is not None else getattr(self.settings, "diagnostic_retention_days", 14)
+        exec_id_days = execution_identity_retention_days if execution_identity_retention_days is not None else 30
 
         ev_cutoff = (now - timedelta(days=ev_days)).isoformat()
         err_cutoff = (now - timedelta(days=err_days)).isoformat()
         res_cutoff = (now - timedelta(days=res_days)).isoformat()
+        diag_cutoff = (now - timedelta(days=diag_days)).isoformat()
+        exec_id_cutoff = (now - timedelta(days=exec_id_days)).isoformat()
 
         summary = {
             "events_deleted": 0,
@@ -53,6 +59,7 @@ class RetentionService:
             "resolved_reconciliations_deleted": 0,
             "resolved_manual_reviews_deleted": 0,
             "old_execution_identities_deleted": 0,
+            "diagnostics_deleted": 0,
         }
 
         with self.db.transaction() as conn:
@@ -102,11 +109,21 @@ class RetentionService:
                     """
                     DELETE FROM execution_identities
                     WHERE state IN ('SENT', 'FAILED', 'COMPLETED')
-                      AND updated_at < ?;
+                      AND (
+                          (completed_at IS NOT NULL AND completed_at < ?)
+                          OR (completed_at IS NULL AND created_at < ?)
+                      );
                     """,
-                    (res_cutoff,),
+                    (exec_id_cutoff, exec_id_cutoff),
                 )
                 summary["old_execution_identities_deleted"] = cur.rowcount
+            except Exception:
+                pass
+
+            # 6. Prune old diagnostics
+            try:
+                cur = conn.execute("DELETE FROM diagnostic_artifacts WHERE created_at < ?;", (diag_cutoff,))
+                summary["diagnostics_deleted"] = cur.rowcount
             except Exception:
                 pass
 

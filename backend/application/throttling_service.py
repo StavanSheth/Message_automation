@@ -37,6 +37,13 @@ class ThrottlingService:
         self.settings = settings or get_settings()
         self._last_send_timestamps: Dict[str, float] = {}
 
+        # Persistent control storage
+        from backend.repositories.system_control_repo import SystemControlRepository
+        if hasattr(cooldown_repo, "db"):
+            self.system_control_repo = SystemControlRepository(cooldown_repo.db)
+        else:
+            self.system_control_repo = None
+
     def can_dispatch(
         self,
         account_id: Optional[str] = None,
@@ -47,7 +54,7 @@ class ThrottlingService:
         1. Check global cooldown
         2. Check account cooldown if account_id is present
         3. Check account limits and status
-        4. Check minimum delay between sends
+        4. Check minimum delay between sends (durable across restarts)
         Returns (allowed, reason).
         """
         # 1. Global cooldown
@@ -56,6 +63,7 @@ class ThrottlingService:
             return False, f"Global cooldown active until {global_cd.cooldown_until} ({global_cd.reason})"
 
         # 2. Account cooldown
+        account_obj = None
         if account_id:
             account_cd = self.cooldown_repo.get_active_cooldown(scope="ACCOUNT", account_id=account_id)
             if account_cd:
@@ -63,18 +71,37 @@ class ThrottlingService:
 
             # 3. Account status and quota limits
             if self.account_repo:
-                account = self.account_repo.get_by_id(account_id)
-                if account:
-                    if account.status != AccountStatus.ACTIVE.value:
-                        return False, f"Account {account_id} is not active (status: {account.status})"
-                    if account.daily_sends_count >= account.daily_send_limit:
-                        return False, f"Account {account_id} reached daily send limit ({account.daily_sends_count}/{account.daily_send_limit})"
+                account_obj = self.account_repo.get_by_id(account_id)
+                if account_obj:
+                    if account_obj.status != AccountStatus.ACTIVE.value:
+                        return False, f"Account {account_id} is not active (status: {account_obj.status})"
+                    if account_obj.daily_sends_count >= account_obj.daily_send_limit:
+                        return False, f"Account {account_id} reached daily send limit ({account_obj.daily_sends_count}/{account_obj.daily_send_limit})"
 
-        # 4. Minimum delay check
+        # 4. Durable minimum delay check
         min_delay = getattr(self.settings, "minimum_send_delay_seconds", 5.0)
-        now_ts = time.time()
+        now_dt = datetime.now(timezone.utc)
+        now_ts = now_dt.timestamp()
         key = account_id or worker_id or "global"
         last_ts = self._last_send_timestamps.get(key, 0.0)
+
+        # Check durable database timestamps
+        if account_obj and account_obj.last_send_at:
+            try:
+                dt = datetime.fromisoformat(account_obj.last_send_at.replace("Z", "+00:00"))
+                last_ts = max(last_ts, dt.timestamp())
+            except Exception:
+                pass
+
+        if self.system_control_repo:
+            try:
+                durable_val = self.system_control_repo.get(f"last_send_at:{key}") or self.system_control_repo.get("last_send_at:global")
+                if durable_val:
+                    dt = datetime.fromisoformat(durable_val.replace("Z", "+00:00"))
+                    last_ts = max(last_ts, dt.timestamp())
+            except Exception:
+                pass
+
         if (now_ts - last_ts) < min_delay:
             remaining = round(min_delay - (now_ts - last_ts), 2)
             return False, f"Minimum delay throttling ({remaining}s remaining for {key})"
@@ -82,8 +109,11 @@ class ThrottlingService:
         return True, "Dispatch permitted"
 
     def record_send(self, account_id: Optional[str] = None, worker_id: Optional[str] = None) -> None:
-        """Update last send timestamp and increment account count."""
-        now_ts = time.time()
+        """Update last send timestamp both in memory and durably in the database."""
+        now_dt = datetime.now(timezone.utc)
+        now_ts = now_dt.timestamp()
+        now_iso = now_dt.isoformat()
+
         if account_id:
             self._last_send_timestamps[account_id] = now_ts
             if self.account_repo:
@@ -91,6 +121,16 @@ class ThrottlingService:
         if worker_id:
             self._last_send_timestamps[worker_id] = now_ts
         self._last_send_timestamps["global"] = now_ts
+
+        # Persist durable timestamps
+        if self.system_control_repo:
+            try:
+                key = account_id or worker_id or "global"
+                self.system_control_repo.set(f"last_send_at:{key}", now_iso)
+                self.system_control_repo.set("last_send_at:global", now_iso)
+            except Exception as e:
+                logger.warning(f"Could not persist durable last_send_at: {e}")
+
 
     def trigger_rate_limit(
         self,
