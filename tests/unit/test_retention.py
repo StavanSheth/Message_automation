@@ -91,3 +91,20 @@ def test_retention_preserves_active_records(retention_env):
     # Check that pending manual review was NOT deleted despite being old
     cur = conn.execute("SELECT id FROM manual_reviews WHERE id = 'rev-pending-old';")
     assert cur.fetchone() is not None
+
+
+def test_retention_records_audit_event(retention_env):
+    service = retention_env["service"]
+    event_repo = retention_env["event_repo"]
+    service.event_repo = event_repo
+
+    summary = service.cleanup_expired_data(event_retention_days=30)
+    assert isinstance(summary, dict)
+
+    import json
+    events = event_repo.list_events(limit=10)
+    ret_events = [e for e in events if e.event_code == EventCode.RETENTION_CLEANUP_COMPLETED.value]
+    assert len(ret_events) >= 1
+    p = json.loads(ret_events[0].payload_json) if ret_events[0].payload_json else {}
+    assert p.get("success") is True
+

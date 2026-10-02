@@ -54,6 +54,7 @@ class AppSettings:
     error_retention_days: int = 30
     minimum_send_delay_seconds: float = 5.0
     daily_send_limit: int = 50
+    retention_interval_seconds: int = 86400
 
     def validate(self) -> None:
         """Validate configuration values."""
@@ -137,6 +138,8 @@ class AppSettings:
             raise ValidationError(f"error_retention_days must be non-negative, got {self.error_retention_days}")
         if self.minimum_send_delay_seconds <= 0:
             raise ValidationError(f"minimum_send_delay_seconds must be positive, got {self.minimum_send_delay_seconds}")
+        if self.retention_interval_seconds <= 0:
+            raise ValidationError(f"retention_interval_seconds must be positive, got {self.retention_interval_seconds}")
 
     def validate_runtime_config(self) -> None:
         """Validate configuration on startup and reject invalid settings with clear ValidationError."""

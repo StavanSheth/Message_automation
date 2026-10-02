@@ -133,13 +133,22 @@ class InstagramAutomationService:
 
         if self.throttling_service:
             try:
-                self.throttling_service.trigger_rate_limit(
-                    reason=reason,
-                    account_id=account_id,
-                    worker_id=worker_id,
-                    session_id=session_id,
-                    duration_seconds=duration,
-                )
+                if hasattr(self.throttling_service, "classify_and_trigger"):
+                    self.throttling_service.classify_and_trigger(
+                        outcome=error_code.value if hasattr(error_code, "value") else str(error_code),
+                        reason=reason,
+                        account_id=account_id,
+                        worker_id=worker_id,
+                        session_id=session_id,
+                    )
+                else:
+                    self.throttling_service.trigger_rate_limit(
+                        reason=reason,
+                        account_id=account_id,
+                        worker_id=worker_id,
+                        session_id=session_id,
+                        duration_seconds=duration,
+                    )
             except Exception as ex:
                 logger.warning(f"Could not trigger rate limit in throttling_service: {ex}")
 
@@ -248,6 +257,8 @@ class InstagramAutomationService:
         try:
             from backend.domain.enums import SessionAuthState
             auth_state, auth_reason = self.auth_validator.check_auth_state(session)
+            if hasattr(session, "auth_status") and hasattr(auth_state, "value"):
+                session.auth_status = auth_state.value
             if auth_state == SessionAuthState.LOGIN_REQUIRED:
                 self._record_error(current_task, ErrorCode.SESSION_EXPIRED, f"Session requires login: {auth_reason}", retryable=False, worker_id=worker_id)
                 self.event_repo.record(

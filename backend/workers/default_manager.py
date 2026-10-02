@@ -71,7 +71,12 @@ class DefaultWorkerManager(WorkerManager):
             if w.status not in (WorkerStatus.STOPPED, WorkerStatus.CRASHED)
         )
 
-    def start_worker(self, mode: Optional[WorkerMode] = None) -> WorkerRecord:
+    def start_worker(
+        self,
+        mode: Optional[WorkerMode] = None,
+        worker_id: Optional[str] = None,
+        account_id: Optional[str] = None,
+    ) -> WorkerRecord:
         """Launch a new worker with an associated browser session. Enforces authoritative max_workers."""
         resolved_mode = mode or self.effective_mode
         if self.effective_mode == WorkerMode.SINGLE_BROWSER:
@@ -84,12 +89,12 @@ class DefaultWorkerManager(WorkerManager):
                 f"already at max_workers={max_allowed}"
             )
 
-        worker_id = generate_id("WKR")
+        worker_id = worker_id or generate_id("WKR")
         worker_code = f"worker-{len(self._workers) + 1}"
 
         session = None
         if self.browser_manager:
-            session_inst = self.browser_manager.create_session(worker_id=worker_id)
+            session_inst = self.browser_manager.create_session(worker_id=worker_id, account_id=account_id)
             try:
                 session_inst.start()
             except Exception:
@@ -108,6 +113,7 @@ class DefaultWorkerManager(WorkerManager):
             stale_timeout=self.settings.worker_stale_timeout,
             worker_repo=self.worker_repo,
             execution_service=self.execution_service,
+            account_id=account_id,
         )
         worker.start()
         self._workers[worker_id] = worker

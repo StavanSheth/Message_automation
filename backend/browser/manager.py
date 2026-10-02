@@ -37,9 +37,11 @@ class BrowserManager:
         profile_manager: Optional[BrowserProfileManager] = None,
         driver_factory: Optional[callable] = None,
         hardware_capabilities: Optional[HardwareCapabilities] = None,
+        session_repo: Optional[Any] = None,
     ):
         self.settings = settings or get_settings()
         self.event_repo = event_repo
+        self.session_repo = session_repo
         self.profile_manager = profile_manager or BrowserProfileManager(
             self.settings.browser_profile_directory
         )
@@ -99,6 +101,7 @@ class BrowserManager:
         worker_id: Optional[str] = None,
         profile_name: Optional[str] = None,
         custom_driver: Optional[BrowserDriver] = None,
+        account_id: Optional[str] = None,
     ) -> BrowserSessionInstance:
         """
         Create and track a new browser session, enforcing concurrency, profile isolation,
@@ -171,12 +174,28 @@ class BrowserManager:
             profile_path=profile.profile_path,
             profile_id=profile.profile_id,
             config=launch_config,
+            account_id=account_id,
         )
 
         self._active_sessions[session_id] = session
         if worker_id:
             self._worker_session_map[worker_id] = session_id
         self.lifecycle_manager.register_session(session)
+
+        if self.session_repo:
+            try:
+                from backend.domain.models import BrowserSession
+                self.session_repo.create(
+                    BrowserSession(
+                        id=session_id,
+                        profile_path=profile.profile_path,
+                        status="STARTING",
+                        worker_id=worker_id,
+                        account_id=account_id,
+                    )
+                )
+            except Exception as e:
+                logger.warning(f"Failed to persist browser session {session_id} to database: {e}")
 
         if self.event_repo:
             self.event_repo.record(
@@ -228,6 +247,12 @@ class BrowserManager:
                 self.lifecycle_manager.stop_session(session_id)
             except Exception as e:
                 logger.warning(f"Error in lifecycle manager stopping {session_id}: {e}")
+
+            if self.session_repo:
+                try:
+                    self.session_repo.close_session(session_id)
+                except Exception as e:
+                    logger.warning(f"Failed to record closed session in repo: {e}")
 
             if session.worker_id and self._worker_session_map.get(session.worker_id) == session_id:
                 self._worker_session_map.pop(session.worker_id, None)

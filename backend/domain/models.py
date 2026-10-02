@@ -215,6 +215,7 @@ class BrowserSession:
     status: str
     started_at: str = field(default_factory=utc_now_iso)
     worker_id: Optional[str] = None
+    account_id: Optional[str] = None
     closed_at: Optional[str] = None
 
 

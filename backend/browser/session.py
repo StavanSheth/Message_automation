@@ -54,6 +54,7 @@ class BrowserSessionInstance:
         )
         self.driver: BrowserDriver = driver or PlaywrightBrowserDriver(self.config)
         self.status: SessionStatus = SessionStatus.NOT_STARTED
+        self.auth_status: Optional[str] = None
         self.created_at: str = utc_now_iso()
         self.last_activity_at: str = self.created_at
         self.current_url: str = ""

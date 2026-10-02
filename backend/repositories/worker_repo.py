@@ -61,6 +61,19 @@ class WorkerRepository(BaseRepository):
             conn.execute(query, params)
         return worker
 
+    def update_status(
+        self,
+        worker_id: str,
+        status: WorkerStatus,
+        quarantine_reason: Optional[str] = None,
+    ) -> bool:
+        """Update worker operational status and quarantine reason."""
+        status_val = status.value if isinstance(status, WorkerStatus) else status
+        query = "UPDATE workers SET status = ?, quarantine_reason = ? WHERE id = ?;"
+        with self.db.transaction() as conn:
+            cur = conn.execute(query, (status_val, quarantine_reason, worker_id))
+            return cur.rowcount > 0
+
     def get_by_id(self, worker_id: str) -> Optional[WorkerRecord]:
         conn = self.db.get_connection()
         cursor = conn.execute("SELECT * FROM workers WHERE id = ?;", (worker_id,))

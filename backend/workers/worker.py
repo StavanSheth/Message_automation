@@ -39,6 +39,7 @@ class Worker:
         stale_timeout: Optional[int] = None,
         worker_repo: Optional[WorkerRepository] = None,
         execution_service: Optional[Any] = None,
+        account_id: Optional[str] = None,
     ):
         settings = get_settings()
         self.settings = settings
@@ -59,7 +60,7 @@ class Worker:
         self._lease_id: Optional[str] = None
         self._lease_lost: bool = False
         self.quarantine_reason: Optional[str] = None
-        self.account_id: Optional[str] = None
+        self.account_id: Optional[str] = account_id or (getattr(session, "account_id", None) if session else None)
 
         self._lock = threading.Lock()
         self._heartbeat_thread: Optional[threading.Thread] = None

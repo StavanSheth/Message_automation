@@ -161,3 +161,83 @@ def test_safety_gate_task_executor_rejects_execution_service_bypass(gate_env):
     success = executor.execute_task(task=task, context=context, session=session)
     assert success is False
     assert auto_svc.call_count == 0
+
+
+def test_safety_gate_ownership_mismatch_quarantines_worker(gate_env):
+    task_repo = gate_env["task_repo"]
+    worker_repo = gate_env["worker_repo"]
+    exec_svc = gate_env["exec_svc"]
+    auto_svc = gate_env["auto_svc"]
+
+    task = Task(
+        id="t-own-mismatch",
+        contact_id="c-gate-1",
+        type=TaskType.MESSAGE,
+        status=TaskState.READY,
+        account_id="acc-gate-1",
+        lease_id="L-OWN",
+        lease_owner="WKR-GATE-1",
+        lock_token="L-OWN",
+    )
+    task_repo.create(task)
+
+    # Session bound to a DIFFERENT account
+    session = MockSession(account_id="acc-different-account")
+
+    success = exec_svc.execute_task(task_id="t-own-mismatch", session=session, worker_id="WKR-GATE-1", lease_id="L-OWN")
+    assert success is False
+    assert auto_svc.call_count == 0
+
+    # Worker must be quarantined
+    wkr = worker_repo.get_by_id("WKR-GATE-1")
+    assert wkr.status == WorkerStatus.QUARANTINED
+
+    # Task routed to MANUAL_REVIEW
+    t = task_repo.get_by_id("t-own-mismatch")
+    assert t.status == TaskState.MANUAL_REVIEW
+
+
+def test_safety_gate_cooldown_blocks_send(gate_env):
+    from backend.repositories.cooldown_repo import CooldownRepository
+    from backend.application.throttling_service import ThrottlingService
+    from backend.domain.models import RateLimitCooldown
+    from datetime import datetime, timezone, timedelta
+
+    cooldown_repo = CooldownRepository(gate_env["db"])
+    throttling_svc = ThrottlingService(cooldown_repo=cooldown_repo)
+    exec_svc = gate_env["exec_svc"]
+    exec_svc.throttling_service = throttling_svc
+    task_repo = gate_env["task_repo"]
+    auto_svc = gate_env["auto_svc"]
+
+    task = Task(
+        id="t-cd-blocked",
+        contact_id="c-gate-1",
+        type=TaskType.MESSAGE,
+        status=TaskState.READY,
+        account_id="acc-gate-1",
+        lease_id="L-CD",
+        lease_owner="WKR-GATE-1",
+        lock_token="L-CD",
+    )
+    task_repo.create(task)
+
+    # Record active cooldown
+    until = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+    cooldown_repo.record_cooldown(
+        RateLimitCooldown(
+            id="cd-test-gate",
+            scope="ACCOUNT",
+            account_id="acc-gate-1",
+            reason="Rate limit active",
+            error_code="RATE_LIMITED",
+            detected_at=datetime.now(timezone.utc).isoformat(),
+            cooldown_until=until,
+        )
+    )
+
+    session = MockSession(account_id="acc-gate-1")
+    success = exec_svc.execute_task(task_id="t-cd-blocked", session=session, worker_id="WKR-GATE-1", lease_id="L-CD")
+    assert success is False
+    assert auto_svc.call_count == 0
+

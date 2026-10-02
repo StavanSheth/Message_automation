@@ -76,6 +76,7 @@ def full_e2e_env(tmp_path):
         automation_service=insta_service,
         event_repo=event_repo,
         execution_identity_repo=exec_id_repo,
+        account_repo=account_repo,
     )
 
     task_executor = TaskExecutor(
@@ -131,6 +132,7 @@ def full_e2e_env(tmp_path):
         "worker_mgr": worker_mgr,
         "task_repo": task_repo,
         "msg_repo": msg_repo,
+        "account_repo": account_repo,
         "insta_service": insta_service,
         "session": session,
     }
@@ -142,6 +144,7 @@ def test_full_production_execution_chain(full_e2e_env):
     worker_mgr = full_e2e_env["worker_mgr"]
     task_repo = full_e2e_env["task_repo"]
     msg_repo = full_e2e_env["msg_repo"]
+    account_repo = full_e2e_env["account_repo"]
     insta_service = full_e2e_env["insta_service"]
     session = full_e2e_env["session"]
 
@@ -150,20 +153,43 @@ def test_full_production_execution_chain(full_e2e_env):
     assert res["status"] == "ok"
     assert control.state == SystemState.RUNNING
 
-    # Get worker started by control service and attach mock session
+    # Get worker started by control service and attach mock session with strict ownership
     workers = worker_mgr.list_workers()
     worker = worker_mgr.get_worker(workers[0].id)
     worker.session = session
+    worker.account_id = "acc-e2e"
+    session.account_id = "acc-e2e"
+    session.worker_id = worker.worker_id
+    session.auth_status = "AUTHENTICATED"
+
+    # Bind worker and session to account in account repository
+    account_repo.assign_worker("acc-e2e", worker.worker_id, session.session_id)
 
     # Create task and message
     task = Task(id="t-p4-e2e", contact_id="c-e2e-p4", type=TaskType.MESSAGE, status=TaskState.READY, account_id="acc-e2e")
     task_repo.create(task)
     msg_repo.create(Message(id="m-p4-e2e", task_id="t-p4-e2e", contact_id="c-e2e-p4", body="Hello E2E!"))
 
-    # Mock automation service delivery
-    insta_service.execute_messaging_task = MagicMock(return_value=True)
+    # Real InstagramAutomationService pipeline execution with deterministic browser driver:
+    # AuthValidator -> Navigator -> ProfileReader -> ProfileVerifier -> Composer -> Sender -> SendVerifier
+    session.driver.evaluate = MagicMock(side_effect=[
+        {"state": "AUTHENTICATED", "reason": "navigation_elements_present"},  # auth validator
+        {"status": "AVAILABLE"},  # navigator
+        {                         # profile reader
+            "url": "https://instagram.com/e2e_p4",
+            "username": "e2e_p4",
+            "display_name": "E2E Contact",
+            "follower_count_text": "1,000",
+            "can_message": True,
+        },
+        {"success": True},        # open message dialog
+        True,                     # composer ready check
+        {"success": True},        # compose message
+        {"submitted": True},      # submit send
+        {"found": True, "snippet": "Hello E2E!", "failure_indicator": False},  # send verifier
+    ])
 
-    # Scheduler tick -> dispatches task to worker -> executes via ExecutionService -> completes
+    # Scheduler tick -> dispatches task to worker -> executes via ExecutionService -> InstagramAutomationService -> completes
     ready_tasks = scheduler.tick()
     assert len(ready_tasks) == 1
 

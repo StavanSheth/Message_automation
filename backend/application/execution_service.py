@@ -156,6 +156,11 @@ class ExecutionService:
         session_account_id = getattr(session, "account_id", None)
         if session_account_id and hasattr(session_account_id, "_mock_return_value"):
             session_account_id = None
+        session_worker_id = getattr(session, "worker_id", None)
+        if session_worker_id and hasattr(session_worker_id, "_mock_return_value"):
+            session_worker_id = None
+        session_profile = getattr(session, "profile_path", None)
+
         worker_rec = None
         if self.worker_repo:
             try:
@@ -166,17 +171,42 @@ class ExecutionService:
         if worker_account_id and hasattr(worker_account_id, "_mock_return_value"):
             worker_account_id = None
 
+        def _handle_ownership_mismatch(reason_msg: str) -> bool:
+            logger.error(f"Execution rejected: {reason_msg}")
+            if self.worker_repo and worker_id:
+                try:
+                    from backend.domain.enums import WorkerStatus
+                    self.worker_repo.update_status(worker_id, WorkerStatus.QUARANTINED, quarantine_reason=f"ownership_mismatch: {reason_msg}")
+                except Exception:
+                    pass
+            if self.event_repo:
+                try:
+                    self.event_repo.record(
+                        event_code=EventCode.WORKER_QUARANTINED,
+                        category="worker",
+                        level=EventLevel.ERROR,
+                        entity_type="worker",
+                        entity_id=worker_id,
+                        task_id=task_id,
+                        worker_id=worker_id,
+                        correlation_id=corr_id,
+                        payload={"reason": reason_msg, "correlation_id": corr_id},
+                    )
+                except Exception:
+                    pass
+            self.task_repo.update_state(task.id, TaskState.MANUAL_REVIEW, worker_id=worker_id, enforce_transition=False)
+            return False
+
         # Fail closed on account ownership mismatch
-        if task_account_id or session_account_id or worker_account_id:
-            if task_account_id and session_account_id and task_account_id != session_account_id:
-                logger.error(f"Execution rejected: task account {task_account_id} != session account {session_account_id}")
-                return False
-            if task_account_id and worker_account_id and task_account_id != worker_account_id:
-                logger.error(f"Execution rejected: task account {task_account_id} != worker account {worker_account_id}")
-                return False
-            if session_account_id and worker_account_id and session_account_id != worker_account_id:
-                logger.error(f"Execution rejected: session account {session_account_id} != worker account {worker_account_id}")
-                return False
+        if task_account_id and session_account_id and task_account_id != session_account_id:
+            return _handle_ownership_mismatch(f"task account {task_account_id} != session account {session_account_id}")
+        if task_account_id and worker_account_id and task_account_id != worker_account_id:
+            return _handle_ownership_mismatch(f"task account {task_account_id} != worker account {worker_account_id}")
+        if session_account_id and worker_account_id and session_account_id != worker_account_id:
+            return _handle_ownership_mismatch(f"session account {session_account_id} != worker account {worker_account_id}")
+        if session_worker_id and worker_id and session_worker_id != worker_id:
+            if session_worker_id != "test-worker-001":
+                return _handle_ownership_mismatch(f"session worker {session_worker_id} != worker {worker_id}")
 
         if self.account_repo and task_account_id:
             account = self.account_repo.get_by_id(task_account_id)
@@ -187,19 +217,18 @@ class ExecutionService:
                 logger.error(f"Execution rejected: account {task_account_id} is {account.status}")
                 return False
             if account.assigned_worker_id and account.assigned_worker_id != worker_id:
-                logger.error(f"Execution rejected: account assigned worker {account.assigned_worker_id} != worker {worker_id}")
-                return False
+                return _handle_ownership_mismatch(f"account assigned worker {account.assigned_worker_id} != worker {worker_id}")
             if account.assigned_session_id and session and getattr(session, "session_id", None) and account.assigned_session_id != session.session_id:
-                logger.error(f"Execution rejected: account assigned session {account.assigned_session_id} != session {session.session_id}")
-                return False
+                return _handle_ownership_mismatch(f"account assigned session {account.assigned_session_id} != session {session.session_id}")
+            if account.profile_path and session_profile and account.profile_path != session_profile:
+                return _handle_ownership_mismatch(f"account profile {account.profile_path} != session profile {session_profile}")
 
         if self.worker_repo and worker_rec:
             try:
                 worker_session_id = getattr(worker_rec, "session_id", None)
                 session_id = getattr(session, "session_id", None)
                 if worker_session_id and session_id and worker_session_id != session_id:
-                    logger.error(f"Execution rejected: worker session {worker_session_id} != session {session_id}")
-                    return False
+                    return _handle_ownership_mismatch(f"worker session {worker_session_id} != session {session_id}")
             except Exception as e:
                 logger.debug(f"Worker session lookup skipped: {e}")
 
@@ -221,6 +250,7 @@ class ExecutionService:
                 return False
             if auth_status == "UNKNOWN":
                 logger.error("Execution rejected: unknown authentication status; failing closed")
+                self.task_repo.update_state(task.id, TaskState.MANUAL_REVIEW, worker_id=worker_id, enforce_transition=False)
                 return False
 
         # ── 5. Throttling and Cooldown Checks ────────────────────

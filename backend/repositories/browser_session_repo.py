@@ -12,8 +12,8 @@ class BrowserSessionRepository(BaseRepository):
     def create(self, session: BrowserSession) -> BrowserSession:
         query = """
             INSERT INTO browser_sessions (
-                id, worker_id, profile_path, status, started_at, closed_at
-            ) VALUES (?, ?, ?, ?, ?, ?);
+                id, worker_id, profile_path, status, started_at, closed_at, account_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?);
         """
         params = (
             session.id,
@@ -22,6 +22,7 @@ class BrowserSessionRepository(BaseRepository):
             session.status,
             session.started_at,
             session.closed_at,
+            session.account_id,
         )
         with self.db.transaction() as conn:
             conn.execute(query, params)
@@ -34,7 +35,8 @@ class BrowserSessionRepository(BaseRepository):
                 profile_path = ?,
                 status = ?,
                 started_at = ?,
-                closed_at = ?
+                closed_at = ?,
+                account_id = ?
             WHERE id = ?;
         """
         params = (
@@ -43,6 +45,7 @@ class BrowserSessionRepository(BaseRepository):
             session.status,
             session.started_at,
             session.closed_at,
+            session.account_id,
             session.id,
         )
         with self.db.transaction() as conn:
@@ -62,6 +65,14 @@ class BrowserSessionRepository(BaseRepository):
         cursor = conn.execute(
             "SELECT * FROM browser_sessions WHERE worker_id = ? ORDER BY started_at DESC;",
             (worker_id,),
+        )
+        return [self._row_to_session(row) for row in cursor.fetchall()]
+
+    def get_by_account_id(self, account_id: str) -> List[BrowserSession]:
+        conn = self.db.get_connection()
+        cursor = conn.execute(
+            "SELECT * FROM browser_sessions WHERE account_id = ? ORDER BY started_at DESC;",
+            (account_id,),
         )
         return [self._row_to_session(row) for row in cursor.fetchall()]
 
@@ -87,5 +98,6 @@ class BrowserSessionRepository(BaseRepository):
             status=row["status"],
             started_at=row["started_at"],
             worker_id=row["worker_id"],
+            account_id=row["account_id"] if "account_id" in row.keys() else None,
             closed_at=row["closed_at"],
         )

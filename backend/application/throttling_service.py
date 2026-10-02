@@ -220,3 +220,63 @@ class ThrottlingService:
                 payload={"cooldown_id": saved.id, "reason": reason, "duration_seconds": duration_seconds},
             )
         return saved
+
+    def classify_and_trigger(
+        self,
+        outcome: str,
+        reason: str,
+        account_id: Optional[str] = None,
+        worker_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+    ) -> RateLimitCooldown:
+        """
+        Authoritatively classify browser/execution outcomes and apply corresponding cooldowns.
+        Outcomes:
+        - RATE_LIMITED: 3600s cooldown
+        - ACTION_BLOCKED: 7200s cooldown
+        - ACCESS_PROHIBITED: 86400s cooldown, mark account CHALLENGED
+        - CHALLENGE: 86400s cooldown, mark account CHALLENGED
+        - CHECKPOINT: 86400s cooldown, mark account CHALLENGED
+        - NETWORK_OFFLINE: 300s cooldown
+        - TEMPORARY_FAILURE: 180s cooldown
+        """
+        outcome_upper = str(outcome).upper()
+        if outcome_upper in ("RATE_LIMITED", "RATE_LIMIT"):
+            duration = getattr(self.settings, "rate_limit_cooldown_seconds", 3600)
+            err_code = "RATE_LIMITED"
+        elif outcome_upper in ("ACTION_BLOCKED", "ACTION_BLOCK"):
+            duration = 7200
+            err_code = "ACTION_BLOCKED"
+        elif outcome_upper in ("ACCESS_PROHIBITED", "ACCESS_BLOCKED"):
+            duration = 86400
+            err_code = "ACCESS_PROHIBITED"
+            if self.account_repo and account_id:
+                try:
+                    self.account_repo.update_status(account_id, AccountStatus.CHALLENGED)
+                except Exception:
+                    pass
+        elif outcome_upper in ("CHALLENGE", "CHECKPOINT"):
+            duration = 86400
+            err_code = outcome_upper
+            if self.account_repo and account_id:
+                try:
+                    self.account_repo.update_status(account_id, AccountStatus.CHALLENGED)
+                except Exception:
+                    pass
+        elif outcome_upper in ("NETWORK_OFFLINE", "NETWORK"):
+            duration = 300
+            err_code = "NETWORK_OFFLINE"
+        elif outcome_upper in ("TEMPORARY_FAILURE", "TEMPORARY_INSTAGRAM"):
+            duration = 180
+            err_code = "TEMPORARY_FAILURE"
+        else:
+            duration = 300
+            err_code = outcome_upper
+
+        return self.trigger_rate_limit(
+            reason=f"{err_code}: {reason}",
+            account_id=account_id,
+            worker_id=worker_id,
+            session_id=session_id,
+            duration_seconds=duration,
+        )

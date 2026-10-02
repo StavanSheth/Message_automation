@@ -13,6 +13,7 @@ from backend.scheduler.retry_scheduler import RetryScheduler
 from backend.repositories.message_repo import MessageRepository
 from backend.events.correlation import generate_id
 from backend.events.logger import get_logger
+from backend.config.settings import get_settings
 
 logger = get_logger("scheduler")
 
@@ -43,6 +44,7 @@ class Scheduler:
         message_repo: Optional[MessageRepository] = None,
         control_service: Optional[Any] = None,
         throttling_service: Optional[Any] = None,
+        retention_service: Optional[Any] = None,
     ):
         self.task_repo = task_repo
         self.followup_repo = followup_repo
@@ -53,6 +55,9 @@ class Scheduler:
         self.message_repo = message_repo or MessageRepository(task_repo.db)
         self.control_service = control_service
         self.throttling_service = throttling_service
+        self.retention_service = retention_service
+        self._last_retention_sweep_at: float = 0.0
+        self.retention_interval_seconds: int = getattr(get_settings(), "retention_interval_seconds", 86400)
 
         self.task_dispatcher = task_dispatcher or TaskDispatcher(
             task_repo=task_repo,
@@ -160,6 +165,17 @@ class Scheduler:
                 return []
 
         now_iso = utc_now_iso()
+
+        # ── Step 0: Scheduled retention sweep (configurable interval) ──
+        if self.retention_service:
+            import time
+            now_ts = time.time()
+            if (now_ts - self._last_retention_sweep_at) >= self.retention_interval_seconds:
+                try:
+                    self.retention_service.cleanup_expired_data()
+                    self._last_retention_sweep_at = now_ts
+                except Exception as e:
+                    logger.warning(f"Error during scheduled retention sweep: {e}")
 
         # ── Step 1: Recover stale workers and interrupted tasks ─────
         if self.worker_manager and hasattr(self.worker_manager, "recover_stale_workers"):
