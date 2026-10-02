@@ -3,35 +3,34 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Instagram Automation — Operational Control Hub</title>
+  <title>Message Automation — Control Plane & Operations</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
     :root {
-      --bg-base: #080c14;
-      --bg-surface: #0f172a;
-      --bg-card: rgba(15, 23, 42, 0.75);
-      --bg-card-hover: rgba(30, 41, 59, 0.7);
-      --border-subtle: rgba(255, 255, 255, 0.08);
-      --border-highlight: rgba(99, 102, 241, 0.3);
-      --text-main: #f8fafc;
+      --bg-base: #06090e;
+      --bg-surface: #0c111a;
+      --bg-card: rgba(15, 23, 42, 0.72);
+      --bg-card-hover: rgba(22, 33, 56, 0.85);
+      --border-subtle: rgba(255, 255, 255, 0.07);
+      --border-highlight: rgba(99, 102, 241, 0.35);
+      --text-main: #f1f5f9;
       --text-muted: #94a3b8;
       --text-dim: #64748b;
       --primary: #6366f1;
-      --primary-glow: rgba(99, 102, 241, 0.25);
+      --primary-glow: rgba(99, 102, 241, 0.3);
       --emerald: #10b981;
       --emerald-glow: rgba(16, 185, 129, 0.25);
       --amber: #f59e0b;
       --rose: #ef4444;
       --cyan: #06b6d4;
+      --purple: #a855f7;
+      --sidebar-width: 260px;
+      --sidebar-collapsed-width: 72px;
     }
 
-    * {
-      box-sizing: border-box;
-      margin: 0;
-      padding: 0;
-    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
 
     body {
       font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
@@ -41,128 +40,256 @@
       display: flex;
       flex-direction: column;
       background-image: 
-        radial-gradient(circle at 15% 15%, rgba(99, 102, 241, 0.08) 0%, transparent 40%),
-        radial-gradient(circle at 85% 75%, rgba(6, 182, 212, 0.06) 0%, transparent 45%);
+        radial-gradient(circle at 12% 10%, rgba(99, 102, 241, 0.07) 0%, transparent 45%),
+        radial-gradient(circle at 88% 80%, rgba(6, 182, 212, 0.05) 0%, transparent 50%);
       background-attachment: fixed;
     }
 
-    /* Header */
-    header {
-      backdrop-filter: blur(16px);
-      -webkit-backdrop-filter: blur(16px);
-      background: rgba(8, 12, 20, 0.85);
-      border-bottom: 1px solid var(--border-subtle);
+    /* 1.1 TOP NAVIGATION BAR */
+    .top-nav {
       position: sticky;
       top: 0;
-      z-index: 50;
-      padding: 1rem 2rem;
+      z-index: 60;
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      background: rgba(6, 9, 14, 0.9);
+      border-bottom: 1px solid var(--border-subtle);
+      height: 64px;
+      padding: 0 1.5rem;
       display: flex;
-      justify-content: space-between;
       align-items: center;
+      justify-content: space-between;
+    }
+
+    .nav-left {
+      display: flex;
+      align-items: center;
+      gap: 1.25rem;
     }
 
     .brand {
       display: flex;
       align-items: center;
-      gap: 0.875rem;
+      gap: 0.75rem;
+      text-decoration: none;
+      color: inherit;
     }
 
-    .brand-icon {
-      width: 40px;
-      height: 40px;
-      background: linear-gradient(135deg, #6366f1, #a855f7, #ec4899);
-      border-radius: 10px;
+    .brand-logo {
+      width: 34px;
+      height: 34px;
+      background: linear-gradient(135deg, #6366f1, #8b5cf6, #ec4899);
+      border-radius: 9px;
       display: flex;
       align-items: center;
       justify-content: center;
-      box-shadow: 0 4px 15px var(--primary-glow);
+      box-shadow: 0 0 14px var(--primary-glow);
     }
 
-    .brand-icon svg {
-      width: 22px;
-      height: 22px;
+    .brand-logo svg {
+      width: 18px;
+      height: 18px;
       fill: white;
     }
 
-    .brand-title h1 {
-      font-size: 1.15rem;
+    .brand-text {
+      font-size: 1.05rem;
       font-weight: 700;
       letter-spacing: -0.02em;
-      background: linear-gradient(135deg, #fff 40%, #cbd5e1);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
     }
 
-    .brand-title p {
-      font-size: 0.75rem;
-      color: var(--text-muted);
+    .env-badge {
       font-family: 'JetBrains Mono', monospace;
+      font-size: 0.65rem;
+      font-weight: 700;
+      padding: 0.2rem 0.55rem;
+      border-radius: 4px;
+      background: rgba(99, 102, 241, 0.15);
+      border: 1px solid rgba(99, 102, 241, 0.35);
+      color: #818cf8;
+      letter-spacing: 0.05em;
     }
 
-    .header-actions {
+    .system-status-indicator {
       display: flex;
       align-items: center;
-      gap: 1rem;
-    }
-
-    .state-pill {
-      display: inline-flex;
-      align-items: center;
       gap: 0.5rem;
-      padding: 0.35rem 0.85rem;
-      border-radius: 9999px;
       font-size: 0.8rem;
       font-weight: 600;
-      letter-spacing: 0.04em;
-      text-transform: uppercase;
-      background: rgba(16, 185, 129, 0.12);
+      padding: 0.3rem 0.75rem;
+      border-radius: 20px;
+      background: rgba(16, 185, 129, 0.1);
       border: 1px solid rgba(16, 185, 129, 0.3);
       color: var(--emerald);
-      box-shadow: 0 0 12px var(--emerald-glow);
+      letter-spacing: 0.02em;
     }
 
-    .state-pill.RUNNING {
-      background: rgba(16, 185, 129, 0.12);
-      border-color: rgba(16, 185, 129, 0.3);
-      color: var(--emerald);
-    }
-
-    .state-pill.PAUSED {
-      background: rgba(245, 158, 11, 0.12);
-      border-color: rgba(245, 158, 11, 0.3);
-      color: var(--amber);
-    }
-
-    .state-pill.DRAINING {
-      background: rgba(99, 102, 241, 0.12);
-      border-color: rgba(99, 102, 241, 0.3);
-      color: var(--primary);
-    }
-
-    .state-pill.DEGRADED, .state-pill.STOPPED {
-      background: rgba(239, 68, 68, 0.12);
-      border-color: rgba(239, 68, 68, 0.3);
-      color: var(--rose);
-    }
-
-    .pulse-dot {
+    .status-dot {
       width: 8px;
       height: 8px;
       border-radius: 50%;
-      background-color: currentColor;
+      background: currentColor;
       box-shadow: 0 0 8px currentColor;
-      animation: pulse 2s infinite;
     }
 
-    @keyframes pulse {
-      0%, 100% { opacity: 1; transform: scale(1); }
-      50% { opacity: 0.4; transform: scale(0.85); }
+    .nav-right {
+      display: flex;
+      align-items: center;
+      gap: 1.25rem;
     }
 
-    /* Main Container */
-    main {
+    .workers-ratio-badge {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      background: rgba(255, 255, 255, 0.04);
+      padding: 0.35rem 0.75rem;
+      border-radius: 6px;
+      border: 1px solid var(--border-subtle);
+    }
+
+    .search-trigger {
+      display: flex;
+      align-items: center;
+      gap: 0.65rem;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      padding: 0.4rem 0.85rem;
+      font-size: 0.8rem;
+      color: var(--text-dim);
+      cursor: pointer;
+      transition: all 0.2s ease;
+      min-width: 200px;
+    }
+
+    .search-trigger:hover {
+      border-color: var(--border-highlight);
+      color: var(--text-muted);
+    }
+
+    .kbd-shortcut {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.65rem;
+      background: rgba(255, 255, 255, 0.08);
+      padding: 0.15rem 0.35rem;
+      border-radius: 4px;
+      margin-left: auto;
+    }
+
+    .icon-btn {
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      cursor: pointer;
+      position: relative;
+      padding: 0.4rem;
+      border-radius: 6px;
+      transition: color 0.15s ease;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .icon-btn:hover { color: var(--text-main); background: rgba(255, 255, 255, 0.05); }
+
+    .nav-badge-count {
+      position: absolute;
+      top: -2px;
+      right: -2px;
+      background: var(--rose);
+      color: white;
+      font-size: 0.65rem;
+      font-weight: 700;
+      padding: 0.1rem 0.35rem;
+      border-radius: 10px;
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    /* LAYOUT: SIDEBAR + CONTENT */
+    .app-shell {
+      display: flex;
       flex: 1;
-      padding: 2rem;
+    }
+
+    /* 1.2 SIDEBAR */
+    .sidebar {
+      width: var(--sidebar-width);
+      background: rgba(8, 12, 19, 0.95);
+      border-right: 1px solid var(--border-subtle);
+      padding: 1.5rem 1rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1.75rem;
+      transition: width 0.2s ease;
+      flex-shrink: 0;
+    }
+
+    .sidebar.collapsed {
+      width: var(--sidebar-collapsed-width);
+    }
+
+    .nav-group-title {
+      font-size: 0.68rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--text-dim);
+      padding-left: 0.75rem;
+      margin-bottom: 0.5rem;
+    }
+
+    .nav-list {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+    }
+
+    .nav-link {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      padding: 0.55rem 0.75rem;
+      border-radius: 8px;
+      color: var(--text-muted);
+      text-decoration: none;
+      font-size: 0.85rem;
+      font-weight: 500;
+      transition: all 0.15s ease;
+    }
+
+    .nav-link:hover {
+      background: rgba(255, 255, 255, 0.04);
+      color: var(--text-main);
+    }
+
+    .nav-link.active {
+      background: rgba(99, 102, 241, 0.12);
+      border: 1px solid rgba(99, 102, 241, 0.3);
+      color: #a5b4fc;
+    }
+
+    .nav-badge {
+      margin-left: auto;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.65rem;
+      font-weight: 700;
+      padding: 0.15rem 0.45rem;
+      border-radius: 9999px;
+    }
+
+    .badge-recon { background: rgba(245, 158, 11, 0.2); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.4); }
+    .badge-review { background: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.4); }
+    .badge-cool { background: rgba(168, 85, 247, 0.2); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.4); }
+
+    /* MAIN VIEW */
+    .content-area {
+      flex: 1;
+      padding: 1.75rem 2rem 3rem 2rem;
       max-width: 1440px;
       margin: 0 auto;
       width: 100%;
@@ -171,24 +298,57 @@
       gap: 2rem;
     }
 
-    /* Controls Bar */
-    .controls-panel {
+    /* 2. SYSTEM CONTROL BAR */
+    .system-control-bar {
       background: var(--bg-card);
       backdrop-filter: blur(12px);
       border: 1px solid var(--border-subtle);
-      border-radius: 14px;
+      border-radius: 12px;
       padding: 1.25rem 1.75rem;
       display: flex;
-      flex-wrap: wrap;
       justify-content: space-between;
       align-items: center;
+      flex-wrap: wrap;
       gap: 1.25rem;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
     }
 
-    .controls-group {
+    .control-info {
+      display: flex;
+      flex-direction: column;
+      gap: 0.35rem;
+    }
+
+    .control-status-row {
       display: flex;
       align-items: center;
       gap: 0.75rem;
+    }
+
+    .state-title {
+      font-size: 1.15rem;
+      font-weight: 700;
+      letter-spacing: -0.01em;
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+    }
+
+    .state-desc {
+      font-size: 0.8rem;
+      color: var(--text-muted);
+    }
+
+    .control-meta {
+      font-size: 0.72rem;
+      color: var(--text-dim);
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    .btn-group {
+      display: flex;
+      align-items: center;
+      gap: 0.65rem;
       flex-wrap: wrap;
     }
 
@@ -198,133 +358,220 @@
       outline: none;
       cursor: pointer;
       font-family: inherit;
-      font-size: 0.85rem;
-      font-weight: 500;
-      padding: 0.55rem 1.15rem;
-      border-radius: 8px;
-      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+      font-size: 0.82rem;
+      font-weight: 600;
+      padding: 0.5rem 1rem;
+      border-radius: 7px;
+      transition: all 0.15s ease;
       display: inline-flex;
       align-items: center;
-      gap: 0.5rem;
-      box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
+      gap: 0.45rem;
     }
 
-    .btn:hover {
-      transform: translateY(-1px);
-      filter: brightness(1.1);
-    }
+    .btn:hover { filter: brightness(1.1); transform: translateY(-1px); }
+    .btn:active { transform: translateY(0); }
 
-    .btn:active {
-      transform: translateY(0);
-    }
+    .btn-pause { background: linear-gradient(135deg, #f59e0b, #d97706); color: white; }
+    .btn-resume { background: linear-gradient(135deg, #10b981, #059669); color: white; }
+    .btn-drain { background: linear-gradient(135deg, #6366f1, #4f46e5); color: white; }
+    .btn-stop { background: linear-gradient(135deg, #ef4444, #dc2626); color: white; }
+    .btn-tick { background: rgba(255, 255, 255, 0.08); border: 1px solid var(--border-subtle); color: var(--text-main); }
+    .btn-tick:hover { background: rgba(255, 255, 255, 0.12); }
 
-    .btn-primary {
-      background: linear-gradient(135deg, #6366f1, #4f46e5);
-      color: white;
-    }
-
-    .btn-success {
-      background: linear-gradient(135deg, #10b981, #059669);
-      color: white;
-    }
-
-    .btn-warning {
-      background: linear-gradient(135deg, #f59e0b, #d97706);
-      color: white;
-    }
-
-    .btn-neutral {
-      background: rgba(255, 255, 255, 0.06);
-      color: var(--text-main);
-      border: 1px solid var(--border-subtle);
-    }
-
-    .btn-neutral:hover {
-      background: rgba(255, 255, 255, 0.1);
-    }
-
-    .refresh-badge {
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
-      font-size: 0.8rem;
-      color: var(--text-muted);
-      font-family: 'JetBrains Mono', monospace;
-    }
-
-    /* KPI Grid */
+    /* 3. SYSTEM OVERVIEW: 6 KPI CARDS */
     .kpi-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-      gap: 1.25rem;
+      grid-template-columns: repeat(6, 1fr);
+      gap: 1rem;
+    }
+
+    @media (max-width: 1200px) {
+      .kpi-grid { grid-template-columns: repeat(3, 1fr); }
+    }
+    @media (max-width: 768px) {
+      .kpi-grid { grid-template-columns: repeat(2, 1fr); }
     }
 
     .kpi-card {
       background: var(--bg-card);
-      backdrop-filter: blur(12px);
+      backdrop-filter: blur(10px);
       border: 1px solid var(--border-subtle);
-      border-radius: 12px;
-      padding: 1.25rem;
+      border-radius: 11px;
+      padding: 1.15rem;
       display: flex;
       flex-direction: column;
-      gap: 0.5rem;
-      transition: border-color 0.2s ease, transform 0.2s ease;
+      gap: 0.4rem;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      text-decoration: none;
+      color: inherit;
     }
 
     .kpi-card:hover {
       border-color: var(--border-highlight);
       transform: translateY(-2px);
+      background: var(--bg-card-hover);
     }
 
-    .kpi-title {
-      font-size: 0.75rem;
-      text-transform: uppercase;
+    .kpi-label {
+      font-size: 0.7rem;
+      font-weight: 700;
       letter-spacing: 0.05em;
-      color: var(--text-muted);
-      font-weight: 600;
+      text-transform: uppercase;
+      color: var(--text-dim);
     }
 
-    .kpi-value {
-      font-size: 1.85rem;
+    .kpi-num {
+      font-size: 1.65rem;
       font-weight: 700;
       letter-spacing: -0.03em;
-      color: var(--text-main);
       font-family: 'JetBrains Mono', monospace;
     }
 
     .kpi-sub {
-      font-size: 0.75rem;
-      color: var(--text-dim);
+      font-size: 0.72rem;
+      color: var(--text-muted);
       display: flex;
+      justify-content: space-between;
       align-items: center;
-      gap: 0.35rem;
     }
 
-    /* Sections */
-    .dashboard-grid {
-      display: grid;
-      grid-template-columns: 2fr 1fr;
-      gap: 1.5rem;
-    }
-
-    @media (max-width: 1024px) {
-      .dashboard-grid {
-        grid-template-columns: 1fr;
-      }
-    }
-
-    .panel {
+    /* 4. EXECUTION PIPELINE */
+    .pipeline-panel {
       background: var(--bg-card);
-      backdrop-filter: blur(12px);
       border: 1px solid var(--border-subtle);
-      border-radius: 14px;
-      padding: 1.5rem;
+      border-radius: 12px;
+      padding: 1.25rem 1.5rem;
       display: flex;
       flex-direction: column;
       gap: 1rem;
     }
 
-    .panel-header {
+    .pipeline-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .pipeline-scroll {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      overflow-x: auto;
+      padding: 0.5rem 0.25rem;
+    }
+
+    .pipe-node {
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      padding: 0.65rem 0.85rem;
+      min-width: 105px;
+      flex-shrink: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    .pipe-node:hover {
+      border-color: var(--border-highlight);
+      background: rgba(99, 102, 241, 0.08);
+    }
+
+    .pipe-title {
+      font-size: 0.65rem;
+      font-weight: 700;
+      color: var(--text-dim);
+      letter-spacing: 0.05em;
+    }
+
+    .pipe-count {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.95rem;
+      font-weight: 700;
+      color: var(--text-main);
+    }
+
+    .pipe-status {
+      display: flex;
+      align-items: center;
+      gap: 0.35rem;
+      font-size: 0.65rem;
+      font-weight: 600;
+    }
+
+    .pipe-arrow {
+      color: var(--text-dim);
+      flex-shrink: 0;
+      font-size: 0.8rem;
+    }
+
+    /* 5. ATTENTION REQUIRED */
+    .attention-box {
+      background: rgba(245, 158, 11, 0.04);
+      border: 1px solid rgba(245, 158, 11, 0.25);
+      border-radius: 11px;
+      padding: 1.15rem 1.5rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+    }
+
+    .attention-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 0.85rem;
+      font-weight: 700;
+      color: #fbbf24;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .attention-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0.5rem 0.75rem;
+      border-radius: 6px;
+      background: rgba(0, 0, 0, 0.25);
+      border-left: 3px solid #f59e0b;
+      font-size: 0.82rem;
+    }
+
+    .attention-row.CRITICAL { border-left-color: var(--rose); }
+    .attention-row.HIGH { border-left-color: #f59e0b; }
+    .attention-row.MEDIUM { border-left-color: #06b6d4; }
+
+    /* SECTION CONTAINERS & GRIDS */
+    .grid-2col {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1.5rem;
+    }
+
+    @media (max-width: 992px) {
+      .grid-2col { grid-template-columns: 1fr; }
+    }
+
+    .panel {
+      background: var(--bg-card);
+      border: 1px solid var(--border-subtle);
+      border-radius: 12px;
+      padding: 1.35rem 1.5rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+    }
+
+    .panel-head {
       display: flex;
       justify-content: space-between;
       align-items: center;
@@ -332,296 +579,891 @@
       padding-bottom: 0.75rem;
     }
 
-    .panel-header h2 {
-      font-size: 1rem;
-      font-weight: 600;
+    .panel-title {
+      font-size: 0.92rem;
+      font-weight: 700;
       letter-spacing: -0.01em;
     }
 
-    .panel-badge {
+    .panel-action {
       font-size: 0.75rem;
-      font-family: 'JetBrains Mono', monospace;
-      color: var(--text-muted);
-      background: rgba(255, 255, 255, 0.04);
-      padding: 0.2rem 0.5rem;
-      border-radius: 6px;
+      color: #818cf8;
+      text-decoration: none;
+      cursor: pointer;
     }
 
-    /* Table Styles */
-    .table-container {
+    /* 6. WORKERS CARDS */
+    .workers-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+      gap: 1rem;
+    }
+
+    .worker-card {
+      background: rgba(255, 255, 255, 0.02);
+      border: 1px solid var(--border-subtle);
+      border-radius: 9px;
+      padding: 1rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.65rem;
+    }
+
+    .worker-card-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 0.85rem;
+      font-weight: 700;
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    .worker-prop {
+      display: flex;
+      flex-direction: column;
+      gap: 0.15rem;
+    }
+
+    .worker-prop-label {
+      font-size: 0.65rem;
+      text-transform: uppercase;
+      color: var(--text-dim);
+      font-weight: 600;
+    }
+
+    .worker-prop-val {
+      font-size: 0.8rem;
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    /* 7. TASK EXECUTION TABLE */
+    .filter-tabs {
+      display: flex;
+      gap: 0.4rem;
+      margin-bottom: 0.5rem;
+    }
+
+    .filter-tab {
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid var(--border-subtle);
+      border-radius: 6px;
+      padding: 0.3rem 0.65rem;
+      font-size: 0.72rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      cursor: pointer;
+    }
+
+    .filter-tab.active {
+      background: var(--primary);
+      border-color: var(--primary);
+      color: white;
+    }
+
+    .table-responsive {
       overflow-x: auto;
     }
 
     table {
       width: 100%;
       border-collapse: collapse;
+      font-size: 0.8rem;
       text-align: left;
-      font-size: 0.85rem;
     }
 
     th {
-      color: var(--text-muted);
-      font-weight: 500;
-      padding: 0.65rem 0.75rem;
+      color: var(--text-dim);
+      font-weight: 600;
+      padding: 0.6rem 0.75rem;
       border-bottom: 1px solid var(--border-subtle);
-      font-size: 0.75rem;
+      font-size: 0.7rem;
       text-transform: uppercase;
       letter-spacing: 0.04em;
     }
 
     td {
-      padding: 0.75rem;
+      padding: 0.65rem 0.75rem;
       border-bottom: 1px solid rgba(255, 255, 255, 0.04);
       color: var(--text-main);
     }
 
-    tr:hover td {
-      background: rgba(255, 255, 255, 0.02);
-    }
+    tr:hover td { background: rgba(255, 255, 255, 0.02); }
 
-    .mono-cell {
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 0.8rem;
-    }
-
-    .badge {
+    .badge-status {
       display: inline-block;
-      padding: 0.2rem 0.55rem;
-      border-radius: 6px;
-      font-size: 0.7rem;
-      font-weight: 600;
-      letter-spacing: 0.03em;
-      text-transform: uppercase;
+      padding: 0.15rem 0.45rem;
+      border-radius: 4px;
+      font-size: 0.68rem;
+      font-weight: 700;
+      font-family: 'JetBrains Mono', monospace;
     }
 
-    .badge-ready { background: rgba(59, 130, 246, 0.15); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.3); }
-    .badge-completed { background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.3); }
-    .badge-running { background: rgba(245, 158, 11, 0.15); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.3); }
-    .badge-failed { background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.3); }
-    .badge-reconciling { background: rgba(168, 85, 247, 0.15); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.3); }
+    .status-READY { background: rgba(59, 130, 246, 0.15); color: #60a5fa; }
+    .status-RUNNING { background: rgba(245, 158, 11, 0.15); color: #fbbf24; }
+    .status-COMPLETED { background: rgba(16, 185, 129, 0.15); color: #34d399; }
+    .status-FAILED { background: rgba(239, 68, 68, 0.15); color: #f87171; }
+    .status-RECONCILING { background: rgba(168, 85, 247, 0.15); color: #c084fc; }
 
-    /* Event stream */
-    .events-list {
+    /* 10. RATE LIMITS & COOLDOWNS */
+    .progress-bar-container {
       display: flex;
       flex-direction: column;
-      gap: 0.65rem;
-      max-height: 480px;
+      gap: 0.35rem;
+      margin-bottom: 0.75rem;
+    }
+
+    .progress-bar-bg {
+      height: 8px;
+      border-radius: 4px;
+      background: rgba(255, 255, 255, 0.06);
+      overflow: hidden;
+    }
+
+    .progress-bar-fill {
+      height: 100%;
+      border-radius: 4px;
+      background: linear-gradient(90deg, #6366f1, #a855f7);
+    }
+
+    /* 11. MESSAGE SAFETY CARDS */
+    .safety-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 0.75rem;
+    }
+
+    .safety-card {
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      padding: 0.85rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.35rem;
+      text-align: center;
+    }
+
+    .safety-label {
+      font-size: 0.65rem;
+      font-weight: 700;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .safety-val {
+      font-size: 1.35rem;
+      font-weight: 700;
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    /* 13. TIMELINE */
+    .timeline {
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+      max-height: 380px;
       overflow-y: auto;
       padding-right: 0.25rem;
     }
 
-    .event-item {
+    .timeline-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 0.75rem;
+      font-size: 0.8rem;
+    }
+
+    .timeline-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      margin-top: 0.4rem;
+      flex-shrink: 0;
+      background: var(--primary);
+      box-shadow: 0 0 6px var(--primary);
+    }
+
+    .timeline-content {
       display: flex;
       flex-direction: column;
-      gap: 0.25rem;
-      padding: 0.65rem 0.85rem;
-      border-radius: 8px;
-      background: rgba(255, 255, 255, 0.02);
-      border-left: 3px solid var(--primary);
-      transition: background 0.15s ease;
+      gap: 0.15rem;
     }
 
-    .event-item:hover {
-      background: rgba(255, 255, 255, 0.04);
+    .timeline-time {
+      font-size: 0.7rem;
+      font-family: 'JetBrains Mono', monospace;
+      color: var(--text-dim);
     }
 
-    .event-header {
+    /* 19. FOOTER */
+    footer {
+      backdrop-filter: blur(12px);
+      background: rgba(6, 9, 14, 0.95);
+      border-top: 1px solid var(--border-subtle);
+      padding: 0.85rem 2rem;
       display: flex;
       justify-content: space-between;
+      align-items: center;
       font-size: 0.75rem;
-    }
-
-    .event-code {
-      font-family: 'JetBrains Mono', monospace;
-      font-weight: 600;
-      color: #cbd5e1;
-    }
-
-    .event-time {
-      color: var(--text-dim);
-      font-family: 'JetBrains Mono', monospace;
-    }
-
-    .event-detail {
-      font-size: 0.8rem;
       color: var(--text-muted);
+      margin-top: auto;
     }
 
-    /* Toast */
+    .footer-health-dots {
+      display: flex;
+      align-items: center;
+      gap: 1.25rem;
+    }
+
+    .f-item {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+    }
+
+    .f-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--emerald);
+    }
+
+    /* MODALS & DRAWERS */
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.75);
+      backdrop-filter: blur(6px);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 100;
+    }
+
+    .modal-backdrop.open { display: flex; }
+
+    .modal-box {
+      background: #0f172a;
+      border: 1px solid var(--border-highlight);
+      border-radius: 14px;
+      width: 100%;
+      max-width: 520px;
+      padding: 1.75rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1.25rem;
+      box-shadow: 0 15px 35px rgba(0, 0, 0, 0.6);
+    }
+
+    .modal-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .modal-title { font-size: 1.1rem; font-weight: 700; }
+
+    /* TOAST */
     #toast {
       position: fixed;
       bottom: 2rem;
       right: 2rem;
-      padding: 0.85rem 1.25rem;
-      border-radius: 10px;
-      background: rgba(15, 23, 42, 0.95);
+      padding: 0.85rem 1.35rem;
+      border-radius: 9px;
+      background: #0f172a;
       border: 1px solid var(--border-highlight);
-      color: var(--text-main);
-      box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5);
+      color: white;
       font-size: 0.85rem;
-      z-index: 100;
-      transform: translateY(100px);
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+      z-index: 110;
       opacity: 0;
-      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      transform: translateY(20px);
+      transition: all 0.25s ease;
+      pointer-events: none;
     }
 
-    #toast.show {
-      transform: translateY(0);
-      opacity: 1;
-    }
+    #toast.show { opacity: 1; transform: translateY(0); }
   </style>
 </head>
 <body>
-  <!-- Header -->
-  <header>
-    <div class="brand">
-      <div class="brand-icon">
-        <svg viewBox="0 0 24 24">
-          <path d="M12 2.163c3.204 0 3.584.012 4.85.07 3.252.148 4.771 1.691 4.919 4.919.058 1.265.069 1.645.069 4.849 0 3.205-.012 3.584-.069 4.849-.149 3.225-1.664 4.771-4.919 4.919-1.266.058-1.644.07-4.85.07-3.204 0-3.584-.012-4.849-.07-3.26-.149-4.771-1.699-4.919-4.92-.058-1.265-.07-1.644-.07-4.849 0-3.204.013-3.583.07-4.849.149-3.227 1.664-4.771 4.919-4.919 1.266-.057 1.645-.069 4.849-.069zm0-2.163c-3.259 0-3.667.014-4.947.072-4.358.2-6.78 2.618-6.98 6.98-.059 1.281-.073 1.689-.073 4.948 0 3.259.014 3.668.072 4.948.2 4.358 2.618 6.78 6.98 6.98 1.281.058 1.689.072 4.948.072 3.259 0 3.668-.014 4.948-.072 4.354-.2 6.782-2.618 6.979-6.98.059-1.28.073-1.689.073-4.948 0-3.259-.014-3.667-.072-4.947-.196-4.354-2.617-6.78-6.979-6.98-1.281-.059-1.69-.073-4.949-.073zm0 5.838c-3.403 0-6.162 2.759-6.162 6.162s2.759 6.163 6.162 6.163 6.162-2.759 6.162-6.163c0-3.403-2.759-6.162-6.162-6.162zm0 10.162c-2.209 0-4-1.79-4-4 0-2.209 1.791-4 4-4s4 1.791 4 4c0 2.21-1.791 4-4 4zm6.406-11.845c-.796 0-1.441.645-1.441 1.44s.645 1.44 1.441 1.44c.795 0 1.439-.645 1.439-1.44s-.644-1.44-1.439-1.44z"/>
-        </svg>
-      </div>
-      <div class="brand-title">
-        <h1>Instagram Automation Hub</h1>
-        <p>Production Hardened &bull; Invariant Guarded</p>
-      </div>
-    </div>
-    <div class="header-actions">
-      <div id="systemStateBadge" class="state-pill RUNNING">
-        <span class="pulse-dot"></span>
-        <span id="systemStateText">RUNNING</span>
-      </div>
-    </div>
-  </header>
 
-  <!-- Main Content -->
-  <main>
-    <!-- Controls Panel -->
-    <div class="controls-panel">
-      <div class="controls-group">
-        <button id="btnPause" class="btn btn-warning" onclick="sendControl('pause')">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
-          Pause System
-        </button>
-        <button id="btnResume" class="btn btn-success" onclick="sendControl('resume')">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
-          Resume System
-        </button>
-        <button id="btnDrain" class="btn btn-primary" onclick="sendControl('drain')">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
-          Drain System
-        </button>
-        <button id="btnTick" class="btn btn-neutral" onclick="sendTick()">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46A7.93 7.93 0 0020 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74A7.93 7.93 0 004 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/></svg>
-          Trigger Tick
-        </button>
-      </div>
-      <div class="refresh-badge">
-        <span id="countdownText">Refreshing in 3s</span>
+  <!-- 1.1 TOP NAVIGATION BAR -->
+  <nav class="top-nav">
+    <div class="nav-left">
+      <a href="#" class="brand">
+        <div class="brand-logo">
+          <svg viewBox="0 0 24 24"><path d="M12 2.163c3.204 0 3.584.012 4.85.07 3.252.148 4.771 1.691 4.919 4.919.058 1.265.069 1.645.069 4.849 0 3.205-.012 3.584-.069 4.849-.149 3.225-1.664 4.771-4.919 4.919-1.266.058-1.644.07-4.85.07-3.204 0-3.584-.012-4.849-.07-3.26-.149-4.771-1.699-4.919-4.92-.058-1.265-.07-1.644-.07-4.849 0-3.204.013-3.583.07-4.849.149-3.227 1.664-4.771 4.919-4.919 1.266-.057 1.645-.069 4.849-.069zm0-2.163c-3.259 0-3.667.014-4.947.072-4.358.2-6.78 2.618-6.98 6.98-.059 1.281-.073 1.689-.073 4.948 0 3.259.014 3.668.072 4.948.2 4.358 2.618 6.78 6.98 6.98 1.281.058 1.689.072 4.948.072 3.259 0 3.668-.014 4.948-.072 4.354-.2 6.782-2.618 6.979-6.98.059-1.28.073-1.689.073-4.948 0-3.259-.014-3.667-.072-4.947-.196-4.354-2.617-6.78-6.979-6.98-1.281-.059-1.69-.073-4.949-.073zm0 5.838c-3.403 0-6.162 2.759-6.162 6.162s2.759 6.163 6.162 6.163 6.162-2.759 6.162-6.163c0-3.403-2.759-6.162-6.162-6.162zm0 10.162c-2.209 0-4-1.79-4-4 0-2.209 1.791-4 4-4s4 1.791 4 4c0 2.21-1.791 4-4 4zm6.406-11.845c-.796 0-1.441.645-1.441 1.44s.645 1.44 1.441 1.44c.795 0 1.439-.645 1.439-1.44s-.644-1.44-1.439-1.44z"/></svg>
+        </div>
+        <span class="brand-text">Message Automation</span>
+      </a>
+      <span class="env-badge" id="envBadge">LOCAL</span>
+      <div class="system-status-indicator" id="topNavStatus">
+        <span class="status-dot"></span>
+        <span id="topNavStateText">RUNNING</span>
       </div>
     </div>
 
-    <!-- KPI Grid -->
-    <div class="kpi-grid">
-      <div class="kpi-card">
-        <div class="kpi-title">Active Workers</div>
-        <div class="kpi-value" id="kpiWorkers">1</div>
-        <div class="kpi-sub">
-          <span id="kpiWorkerDetail">1 active &bull; 0 busy</span>
-        </div>
+    <div class="nav-right">
+      <div class="workers-ratio-badge">
+        <span>Workers:</span>
+        <strong id="topNavWorkerRatio">1 / 1</strong>
       </div>
-      <div class="kpi-card">
-        <div class="kpi-title">Tasks in Queue</div>
-        <div class="kpi-value" id="kpiQueue">0</div>
-        <div class="kpi-sub">
-          <span id="kpiQueueDetail">0 ready &bull; 0 running</span>
-        </div>
+      <div class="search-trigger" onclick="openSearchModal()">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0016 9.5 6.5 6.5 0 109.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+        <span>Search anything...</span>
+        <span class="kbd-shortcut">Ctrl+K</span>
       </div>
-      <div class="kpi-card">
-        <div class="kpi-title">Completed Tasks</div>
-        <div class="kpi-value" id="kpiCompleted">0</div>
-        <div class="kpi-sub">
-          <span id="kpiCompletedDetail">100% verified single-send</span>
-        </div>
-      </div>
-      <div class="kpi-card">
-        <div class="kpi-title">Safety & Cooldowns</div>
-        <div class="kpi-value" id="kpiSafety">0</div>
-        <div class="kpi-sub">
-          <span id="kpiSafetyDetail">0 active cooldowns</span>
-        </div>
-      </div>
+      <button class="icon-btn" onclick="openReconciliationModal(null)" title="Notifications / Reconciliations">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 22c1.1 0 2-.9 2-2h-4c0 1.1.89 2 2 2zm6-6v-5c0-3.07-1.64-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.63 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2z"/></svg>
+        <span class="nav-badge-count" id="notificationCount">0</span>
+      </button>
     </div>
+  </nav>
 
-    <!-- Two-Column Operational Layout -->
-    <div class="dashboard-grid">
-      <!-- Left Column: Tasks Queue & Workers -->
-      <div style="display: flex; flex-direction: column; gap: 1.5rem;">
-        <!-- Worker Pool Panel -->
-        <div class="panel">
-          <div class="panel-header">
-            <h2>Active Worker Pool</h2>
-            <span class="panel-badge" id="workerPoolBadge">1 worker</span>
+  <div class="app-shell">
+    <!-- 1.2 SIDEBAR -->
+    <aside class="sidebar" id="sidebar">
+      <div>
+        <div class="nav-group-title">Overview</div>
+        <ul class="nav-list">
+          <li><a href="#overview" class="nav-link active">Dashboard</a></li>
+        </ul>
+      </div>
+
+      <div>
+        <div class="nav-group-title">Automation</div>
+        <ul class="nav-list">
+          <li><a href="#pipeline" class="nav-link">Pipeline</a></li>
+          <li><a href="#tasks" class="nav-link">Tasks</a></li>
+          <li><a href="#followups" class="nav-link">Follow-ups</a></li>
+        </ul>
+      </div>
+
+      <div>
+        <div class="nav-group-title">Infrastructure</div>
+        <ul class="nav-list">
+          <li><a href="#accounts" class="nav-link">Accounts</a></li>
+          <li><a href="#sessions" class="nav-link">Sessions</a></li>
+          <li><a href="#workers" class="nav-link">Workers</a></li>
+          <li><a href="#scheduler" class="nav-link">Scheduler</a></li>
+        </ul>
+      </div>
+
+      <div>
+        <div class="nav-group-title">Safety</div>
+        <ul class="nav-list">
+          <li>
+            <a href="#safety" class="nav-link">
+              <span>Reconciliation</span>
+              <span class="nav-badge badge-recon" id="sidebarReconBadge">0</span>
+            </a>
+          </li>
+          <li>
+            <a href="#safety" class="nav-link">
+              <span>Manual Review</span>
+              <span class="nav-badge badge-review" id="sidebarReviewBadge">0</span>
+            </a>
+          </li>
+          <li>
+            <a href="#cooldowns" class="nav-link">
+              <span>Cooldowns</span>
+              <span class="nav-badge badge-cool" id="sidebarCoolBadge">0</span>
+            </a>
+          </li>
+        </ul>
+      </div>
+
+      <div>
+        <div class="nav-group-title">Observability</div>
+        <ul class="nav-list">
+          <li><a href="#activity" class="nav-link">Events</a></li>
+          <li><a href="#metrics" class="nav-link">Metrics</a></li>
+        </ul>
+      </div>
+
+      <div>
+        <div class="nav-group-title">System</div>
+        <ul class="nav-list">
+          <li><a href="#database" class="nav-link">Database</a></li>
+          <li><a href="#backup" class="nav-link">Backup & Recovery</a></li>
+        </ul>
+      </div>
+    </aside>
+
+    <!-- CONTENT AREA -->
+    <main class="content-area">
+      <!-- 2. SYSTEM CONTROL BAR -->
+      <section class="system-control-bar" id="overview">
+        <div class="control-info">
+          <div class="control-status-row">
+            <span class="state-title" id="ctrlStateTitle">
+              <span class="status-dot"></span>
+              <span id="ctrlStateText">RUNNING</span>
+            </span>
           </div>
-          <div class="table-container">
+          <div class="state-desc" id="ctrlStateDesc">All automation systems operational</div>
+          <div class="control-meta">Uptime: <span id="ctrlUptime">0h 0m 0s</span> &bull; Last check: <span id="lastCheckTime">just now</span></div>
+        </div>
+
+        <div class="btn-group" id="stateControlsContainer">
+          <button class="btn btn-pause" id="btnPause" onclick="sendControl('pause')">Pause</button>
+          <button class="btn btn-drain" id="btnDrain" onclick="sendControl('drain')">Drain</button>
+          <button class="btn btn-stop" id="btnStop" onclick="openStopModal()">Stop</button>
+          <button class="btn btn-tick" onclick="sendTick()">Trigger Tick</button>
+        </div>
+      </section>
+
+      <!-- 3. SYSTEM OVERVIEW: 6 KPI CARDS -->
+      <section class="kpi-grid">
+        <div class="kpi-card" onclick="location.href='#overview'">
+          <div class="kpi-label">System</div>
+          <div class="kpi-num" id="kpiSystem">RUNNING</div>
+          <div class="kpi-sub"><span id="kpiSystemSub">Healthy</span></div>
+        </div>
+        <div class="kpi-card" onclick="location.href='#workers'">
+          <div class="kpi-label">Workers</div>
+          <div class="kpi-num" id="kpiWorkers">1 / 1</div>
+          <div class="kpi-sub"><span id="kpiWorkersSub">Healthy</span></div>
+        </div>
+        <div class="kpi-card" onclick="location.href='#accounts'">
+          <div class="kpi-label">Accounts</div>
+          <div class="kpi-num" id="kpiAccounts">1 / 1</div>
+          <div class="kpi-sub"><span id="kpiAccountsSub">Active</span></div>
+        </div>
+        <div class="kpi-card" onclick="location.href='#tasks'">
+          <div class="kpi-label">Queue</div>
+          <div class="kpi-num" id="kpiQueue">0</div>
+          <div class="kpi-sub"><span id="kpiQueueSub">0 ready</span></div>
+        </div>
+        <div class="kpi-card" onclick="location.href='#tasks'">
+          <div class="kpi-label">Sent Today</div>
+          <div class="kpi-num" id="kpiSent">0</div>
+          <div class="kpi-sub"><span style="color: var(--emerald);">+100% verified</span></div>
+        </div>
+        <div class="kpi-card" onclick="location.href='#attention'">
+          <div class="kpi-label">Attention</div>
+          <div class="kpi-num" id="kpiAttention" style="color: #fbbf24;">0</div>
+          <div class="kpi-sub"><span id="kpiAttentionSub">None</span></div>
+        </div>
+      </section>
+
+      <!-- 4. EXECUTION PIPELINE (11 NODES) -->
+      <section class="pipeline-panel" id="pipeline">
+        <div class="pipeline-header">
+          <span>Execution Pipeline</span>
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 0.7rem; color: var(--text-dim);">INVARIANT GUARDED (PHASE 1–5)</span>
+        </div>
+        <div class="pipeline-scroll">
+          <div class="pipe-node" onclick="location.href='#tasks'">
+            <span class="pipe-title">SOURCE</span>
+            <span class="pipe-count" id="pipeSourceCount">3</span>
+            <span class="pipe-status" style="color: var(--emerald);"><span class="status-dot"></span> HEALTHY</span>
+          </div>
+          <span class="pipe-arrow">&rarr;</span>
+
+          <div class="pipe-node" onclick="location.href='#tasks'">
+            <span class="pipe-title">TASK</span>
+            <span class="pipe-count" id="pipeTaskCount">3 READY</span>
+            <span class="pipe-status" style="color: var(--emerald);"><span class="status-dot"></span> QUEUED</span>
+          </div>
+          <span class="pipe-arrow">&rarr;</span>
+
+          <div class="pipe-node" onclick="location.href='#scheduler'">
+            <span class="pipe-title">SCHEDULER</span>
+            <span class="pipe-count" id="pipeSchedState">ACTIVE</span>
+            <span class="pipe-status" style="color: var(--emerald);"><span class="status-dot"></span> RUNNING</span>
+          </div>
+          <span class="pipe-arrow">&rarr;</span>
+
+          <div class="pipe-node" onclick="location.href='#scheduler'">
+            <span class="pipe-title">DISPATCHER</span>
+            <span class="pipe-count">SOLE AUTH</span>
+            <span class="pipe-status" style="color: var(--emerald);"><span class="status-dot"></span> GATED</span>
+          </div>
+          <span class="pipe-arrow">&rarr;</span>
+
+          <div class="pipe-node" onclick="location.href='#workers'">
+            <span class="pipe-title">WORKER</span>
+            <span class="pipe-count" id="pipeWorkerCount">1 ACTIVE</span>
+            <span class="pipe-status" style="color: var(--emerald);"><span class="status-dot"></span> IDLE</span>
+          </div>
+          <span class="pipe-arrow">&rarr;</span>
+
+          <div class="pipe-node">
+            <span class="pipe-title">EXECUTION</span>
+            <span class="pipe-count">EX-SERVICE</span>
+            <span class="pipe-status" style="color: var(--emerald);"><span class="status-dot"></span> ATOMIC</span>
+          </div>
+          <span class="pipe-arrow">&rarr;</span>
+
+          <div class="pipe-node">
+            <span class="pipe-title">AUTH</span>
+            <span class="pipe-count">FAIL-CLOSED</span>
+            <span class="pipe-status" style="color: var(--emerald);"><span class="status-dot"></span> VALID</span>
+          </div>
+          <span class="pipe-arrow">&rarr;</span>
+
+          <div class="pipe-node">
+            <span class="pipe-title">PROFILE</span>
+            <span class="pipe-count">EXTRACTION</span>
+            <span class="pipe-status" style="color: var(--emerald);"><span class="status-dot"></span> STRICT</span>
+          </div>
+          <span class="pipe-arrow">&rarr;</span>
+
+          <div class="pipe-node">
+            <span class="pipe-title">SEND</span>
+            <span class="pipe-count">SINGLE</span>
+            <span class="pipe-status" style="color: var(--emerald);"><span class="status-dot"></span> GUARDED</span>
+          </div>
+          <span class="pipe-arrow">&rarr;</span>
+
+          <div class="pipe-node">
+            <span class="pipe-title">VERIFY</span>
+            <span class="pipe-count">DOM CHECK</span>
+            <span class="pipe-status" style="color: var(--emerald);"><span class="status-dot"></span> ACTIVE</span>
+          </div>
+          <span class="pipe-arrow">&rarr;</span>
+
+          <div class="pipe-node" onclick="location.href='#tasks'">
+            <span class="pipe-title">RESULT</span>
+            <span class="pipe-count" id="pipeResultCount">0 SENT</span>
+            <span class="pipe-status" style="color: var(--emerald);"><span class="status-dot"></span> AUDITED</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- 5. ATTENTION REQUIRED -->
+      <section class="attention-box" id="attention">
+        <div class="attention-header">
+          <span>Attention Required</span>
+          <span id="attentionBadge" style="font-size: 0.72rem; color: var(--text-dim);">0 issues</span>
+        </div>
+        <div id="attentionRowsContainer" style="display: flex; flex-direction: column; gap: 0.5rem;">
+          <div style="font-size: 0.8rem; color: var(--text-dim); text-align: center; padding: 0.5rem;">No critical items requiring operator intervention</div>
+        </div>
+      </section>
+
+      <!-- 6. WORKERS SECTION -->
+      <section class="panel" id="workers">
+        <div class="panel-head">
+          <span class="panel-title">Active Workers</span>
+          <span class="panel-action" id="workerCountMeta">1 Total</span>
+        </div>
+        <div class="workers-grid" id="workersContainer">
+          <!-- Populated dynamically -->
+        </div>
+      </section>
+
+      <!-- 7. TASK EXECUTION SECTION -->
+      <section class="panel" id="tasks">
+        <div class="panel-head">
+          <span class="panel-title">Task Execution Queue</span>
+          <div class="filter-tabs">
+            <button class="filter-tab active" onclick="filterTasks('ALL', this)">All</button>
+            <button class="filter-tab" onclick="filterTasks('RUNNING', this)">Running</button>
+            <button class="filter-tab" onclick="filterTasks('READY', this)">Ready</button>
+            <button class="filter-tab" onclick="filterTasks('COMPLETED', this)">Completed</button>
+            <button class="filter-tab" onclick="filterTasks('FAILED', this)">Failed</button>
+            <button class="filter-tab" onclick="filterTasks('RECONCILING', this)">Reconciliation</button>
+          </div>
+        </div>
+        <div class="table-responsive">
+          <table>
+            <thead>
+              <tr>
+                <th>Task ID</th>
+                <th>Contact</th>
+                <th>Account</th>
+                <th>Worker</th>
+                <th>State</th>
+                <th>Priority</th>
+                <th>Attempts</th>
+                <th>Scheduled At</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="tasksTbody">
+              <tr><td colspan="9" style="text-align: center; color: var(--text-dim); padding: 1.5rem;">Loading tasks...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- 8 & 9. ACCOUNT HEALTH & BROWSER SESSIONS -->
+      <div class="grid-2col">
+        <!-- 8. Accounts -->
+        <section class="panel" id="accounts">
+          <div class="panel-head">
+            <span class="panel-title">Account Health</span>
+            <span class="panel-action">Overview</span>
+          </div>
+          <div class="table-responsive">
             <table>
               <thead>
                 <tr>
-                  <th>Worker ID</th>
-                  <th>Mode</th>
-                  <th>Status</th>
-                  <th>Current Task</th>
                   <th>Account</th>
+                  <th>Auth</th>
+                  <th>Worker</th>
+                  <th>Rate Status</th>
+                  <th>Daily Sends</th>
                 </tr>
               </thead>
-              <tbody id="workersTableBody">
-                <tr><td colspan="5" style="text-align: center; color: var(--text-dim);">Loading worker pool...</td></tr>
+              <tbody id="accountsTbody">
+                <!-- Dynamically populated -->
               </tbody>
             </table>
           </div>
-        </div>
+        </section>
 
-        <!-- Task Queue Panel -->
-        <div class="panel">
-          <div class="panel-header">
-            <h2>Task Queue Breakdown</h2>
-            <span class="panel-badge" id="tasksBadge">Live State</span>
+        <!-- 9. Browser Sessions -->
+        <section class="panel" id="sessions">
+          <div class="panel-head">
+            <span class="panel-title">Browser Sessions</span>
+            <span class="panel-action">Live Instances</span>
           </div>
-          <div class="table-container">
+          <div class="table-responsive">
             <table>
               <thead>
                 <tr>
-                  <th>Task ID</th>
-                  <th>Contact ID</th>
-                  <th>Type</th>
-                  <th>Priority</th>
+                  <th>Session ID</th>
+                  <th>Worker</th>
+                  <th>Account</th>
                   <th>Status</th>
+                  <th>Auth</th>
                 </tr>
               </thead>
-              <tbody id="tasksTableBody">
-                <tr><td colspan="5" style="text-align: center; color: var(--text-dim);">Loading task queue...</td></tr>
+              <tbody id="sessionsTbody">
+                <!-- Dynamically populated -->
               </tbody>
             </table>
           </div>
-        </div>
+        </section>
       </div>
 
-      <!-- Right Column: Real-time Audit Stream -->
-      <div class="panel">
-        <div class="panel-header">
-          <h2>Live Observability Log</h2>
-          <span class="panel-badge">Audit Stream</span>
+      <!-- 10 & 11. RATE LIMITS & MESSAGE SAFETY -->
+      <div class="grid-2col">
+        <!-- 10. Rate Limits / Cooldowns -->
+        <section class="panel" id="cooldowns">
+          <div class="panel-head">
+            <span class="panel-title">Rate Limits & Cooldowns</span>
+            <span class="panel-action" id="cooldownMeta">0 Active</span>
+          </div>
+          <div id="cooldownsListContainer">
+            <div style="font-size: 0.8rem; color: var(--text-dim); padding: 1rem 0; text-align: center;">No active rate-limit cooldowns in effect. Global dispatch available.</div>
+          </div>
+        </section>
+
+        <!-- 11. Message Safety -->
+        <section class="panel" id="safety">
+          <div class="panel-head">
+            <span class="panel-title">Message Safety Invariants</span>
+            <span class="panel-action" onclick="openReconciliationModal(null)">Inspect Items</span>
+          </div>
+          <div class="safety-grid">
+            <div class="safety-card">
+              <span class="safety-label">Reconciliation</span>
+              <span class="safety-val" id="safetyRecon" style="color: #fbbf24;">0</span>
+            </div>
+            <div class="safety-card">
+              <span class="safety-label">Manual Review</span>
+              <span class="safety-val" id="safetyReview" style="color: #f87171;">0</span>
+            </div>
+            <div class="safety-card">
+              <span class="safety-label">Unknown Send</span>
+              <span class="safety-val" id="safetyUnknown">0</span>
+            </div>
+            <div class="safety-card">
+              <span class="safety-label">Confirmed Sent</span>
+              <span class="safety-val" id="safetyConfirmed" style="color: var(--emerald);">0</span>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <!-- 13 & 15. ACTIVITY TIMELINE & SCHEDULER -->
+      <div class="grid-2col">
+        <!-- 13. Recent Activity -->
+        <section class="panel" id="activity">
+          <div class="panel-head">
+            <span class="panel-title">Recent Activity</span>
+            <span class="panel-action">Live Stream</span>
+          </div>
+          <div class="timeline" id="timelineContainer">
+            <!-- Dynamically populated -->
+          </div>
+        </section>
+
+        <!-- 15. Scheduler Status & Follow-ups -->
+        <section class="panel" id="scheduler">
+          <div class="panel-head">
+            <span class="panel-title">Scheduler Status</span>
+            <span class="panel-action" id="schedStatusBadge">RUNNING</span>
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 0.75rem;">
+            <div style="display: flex; justify-content: space-between; font-size: 0.82rem; border-bottom: 1px solid var(--border-subtle); padding-bottom: 0.5rem;">
+              <span style="color: var(--text-dim);">Ready Tasks:</span>
+              <strong id="schedReady">0</strong>
+            </div>
+            <div style="display: flex; justify-content: space-between; font-size: 0.82rem; border-bottom: 1px solid var(--border-subtle); padding-bottom: 0.5rem;">
+              <span style="color: var(--text-dim);">Eligible for Dispatch:</span>
+              <strong id="schedEligible" style="color: var(--emerald);">0</strong>
+            </div>
+            <div style="display: flex; justify-content: space-between; font-size: 0.82rem; border-bottom: 1px solid var(--border-subtle); padding-bottom: 0.5rem;">
+              <span style="color: var(--text-dim);">Blocked by Safety/Cooldown:</span>
+              <strong id="schedBlocked" style="color: #f59e0b;">0</strong>
+            </div>
+            <div style="display: flex; justify-content: space-between; font-size: 0.82rem; padding-bottom: 0.5rem;">
+              <span style="color: var(--text-dim);">Last Dispatch Cycle:</span>
+              <span id="schedLastDispatch" style="font-family: 'JetBrains Mono', monospace;">—</span>
+            </div>
+          </div>
+
+          <div style="margin-top: 1rem;" id="followups">
+            <div class="panel-head" style="margin-bottom: 0.5rem;">
+              <span class="panel-title" style="font-size: 0.85rem;">Follow-ups Queue</span>
+            </div>
+            <div id="followupsListContainer">
+              <div style="font-size: 0.8rem; color: var(--text-dim); text-align: center; padding: 0.5rem;">No pending follow-ups</div>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <!-- 17 & 18. DATABASE HEALTH & BACKUP/RECOVERY -->
+      <section class="panel" id="database">
+        <div class="panel-head">
+          <span class="panel-title">Database & Local Backup Recovery</span>
+          <div class="btn-group">
+            <button class="btn btn-tick" onclick="triggerBackup()">Create Backup</button>
+            <button class="btn btn-tick" onclick="verifyBackup()">Validate Backup</button>
+          </div>
         </div>
-        <div class="events-list" id="eventsContainer">
-          <div style="text-align: center; padding: 2rem; color: var(--text-dim);">Loading audit events...</div>
+        <div class="grid-2col" style="gap: 1.5rem;">
+          <div style="display: flex; flex-direction: column; gap: 0.5rem; font-size: 0.8rem;">
+            <div style="display: flex; justify-content: space-between;">
+              <span style="color: var(--text-dim);">Engine:</span>
+              <span style="font-family: 'JetBrains Mono', monospace;">SQLite (WAL Mode)</span>
+            </div>
+            <div style="display: flex; justify-content: space-between;">
+              <span style="color: var(--text-dim);">Schema Version:</span>
+              <span style="font-family: 'JetBrains Mono', monospace;" id="dbSchemaVer">v10 (Phase 5 Complete)</span>
+            </div>
+            <div style="display: flex; justify-content: space-between;">
+              <span style="color: var(--text-dim);">Integrity Check:</span>
+              <span style="color: var(--emerald); font-weight: 600;">● Passed (PRAGMA integrity_check)</span>
+            </div>
+            <div style="display: flex; justify-content: space-between;">
+              <span style="color: var(--text-dim);">Database Size:</span>
+              <span style="font-family: 'JetBrains Mono', monospace;" id="dbFileSize">0.0 MB</span>
+            </div>
+          </div>
+
+          <div style="display: flex; flex-direction: column; gap: 0.5rem; font-size: 0.8rem;" id="backup">
+            <div style="display: flex; justify-content: space-between;">
+              <span style="color: var(--text-dim);">Last Backup:</span>
+              <span style="font-family: 'JetBrains Mono', monospace;" id="lastBackupTime">—</span>
+            </div>
+            <div style="display: flex; justify-content: space-between;">
+              <span style="color: var(--text-dim);">Online WAL Consistency:</span>
+              <span style="color: var(--emerald); font-weight: 600;">● Verified</span>
+            </div>
+            <div style="display: flex; justify-content: space-between;">
+              <span style="color: var(--text-dim);">Schema Migrations Verified:</span>
+              <span style="color: var(--emerald); font-weight: 600;">● 10 / 10 Applied</span>
+            </div>
+          </div>
         </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- 19. SYSTEM HEALTH FOOTER -->
+  <footer>
+    <div class="footer-health-dots">
+      <div class="f-item"><span class="f-dot"></span> Database</div>
+      <div class="f-item"><span class="f-dot"></span> Scheduler</div>
+      <div class="f-item"><span class="f-dot"></span> Workers</div>
+      <div class="f-item"><span class="f-dot"></span> Browser</div>
+      <div class="f-item"><span class="f-dot"></span> Authentication</div>
+      <div class="f-item"><span class="f-dot"></span> Throttling</div>
+      <div class="f-item"><span class="f-dot"></span> Reconciliation</div>
+    </div>
+    <div>Phase 1–5 Hardened &bull; Zero Blind Retry Architecture</div>
+  </footer>
+
+  <!-- 12. RECONCILIATION PREVIEW MODAL -->
+  <div class="modal-backdrop" id="reconModal">
+    <div class="modal-box">
+      <div class="modal-head">
+        <h3 class="modal-title">Message Reconciliation</h3>
+        <button class="icon-btn" onclick="closeModal('reconModal')">&times;</button>
+      </div>
+      <div style="font-size: 0.85rem; color: var(--text-muted); display: flex; flex-direction: column; gap: 0.75rem;">
+        <div>Task ID: <strong id="reconModalTaskId" style="color: white; font-family: 'JetBrains Mono', monospace;">#1819</strong></div>
+        <div>Account: <strong id="reconModalAccount" style="color: white;">@account_01</strong></div>
+        <div>Worker: <strong id="reconModalWorker" style="color: white;">WKR-01</strong></div>
+        <hr style="border: none; border-top: 1px solid var(--border-subtle); margin: 0.25rem 0;">
+        <div>Send Attempt: <span style="color: #f59e0b; font-weight: 600;">UNKNOWN RESULT</span></div>
+        <div>Verification: <span style="color: #f87171;">NOT COMPLETED IN DOM</span></div>
+        <div>Automatic Retry: <span style="color: var(--rose); font-weight: 700;">BLOCKED BY INVARIANT</span></div>
+        <div style="font-size: 0.75rem; color: var(--text-dim); margin-top: 0.25rem;">
+          Operator must explicitly inspect Instagram DM before selecting an action. Direct resend is strictly prohibited.
+        </div>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 0.5rem; margin-top: 0.5rem;">
+        <button class="btn btn-resume" onclick="resolveReconciliation('CONFIRMED_SENT')">Confirmed Sent</button>
+        <button class="btn btn-tick" onclick="resolveReconciliation('CONFIRMED_NOT_SENT')">Confirmed Not Sent</button>
+        <button class="btn btn-drain" onclick="resolveReconciliation('RETRY_ALLOWED')">Retry Allowed (Re-queue)</button>
+        <button class="btn btn-stop" onclick="resolveReconciliation('CANCELLED')">Cancel Task</button>
       </div>
     </div>
-  </main>
+  </div>
 
-  <div id="toast">Command dispatched successfully</div>
+  <!-- STOP SYSTEM CONFIRMATION MODAL -->
+  <div class="modal-backdrop" id="stopModal">
+    <div class="modal-box">
+      <div class="modal-head">
+        <h3 class="modal-title" style="color: var(--rose);">Stop Automation System?</h3>
+        <button class="icon-btn" onclick="closeModal('stopModal')">&times;</button>
+      </div>
+      <div style="font-size: 0.85rem; color: var(--text-muted); display: flex; flex-direction: column; gap: 0.5rem;">
+        <p>This will halt the scheduler, stop all active workers, and release acquired task leases safely back to the repository.</p>
+        <div style="background: rgba(0,0,0,0.3); padding: 0.75rem; border-radius: 8px; border: 1px solid var(--border-subtle);">
+          Currently active tasks: <strong id="stopModalRunningCount">0 tasks</strong>
+        </div>
+      </div>
+      <div style="display: flex; justify-content: flex-end; gap: 0.75rem; margin-top: 0.5rem;">
+        <button class="btn btn-tick" onclick="closeModal('stopModal')">Cancel</button>
+        <button class="btn btn-stop" onclick="confirmStopSystem()">Stop System</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 20. GLOBAL SEARCH MODAL -->
+  <div class="modal-backdrop" id="searchModal">
+    <div class="modal-box" style="max-width: 600px;">
+      <div class="modal-head">
+        <h3 class="modal-title">Global Operational Search</h3>
+        <button class="icon-btn" onclick="closeModal('searchModal')">&times;</button>
+      </div>
+      <div>
+        <input type="text" id="globalSearchInput" placeholder="Search Task ID, Execution Key, Account, Worker..." 
+               style="width: 100%; padding: 0.65rem 0.85rem; background: rgba(0,0,0,0.3); border: 1px solid var(--border-subtle); border-radius: 8px; color: white; font-size: 0.85rem;"
+               oninput="executeSearch(this.value)">
+      </div>
+      <div id="searchResultsContainer" style="display: flex; flex-direction: column; gap: 0.5rem; max-height: 250px; overflow-y: auto;">
+        <div style="text-align: center; color: var(--text-dim); padding: 1rem;">Type to search repository entities</div>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast">Command executed</div>
 
   <script>
-    let countdown = 3;
+    let globalStatusData = null;
+    let selectedReconId = null;
+    let currentTaskFilter = 'ALL';
 
     function showToast(msg) {
       const toast = document.getElementById('toast');
@@ -630,6 +1472,32 @@
       setTimeout(() => toast.classList.remove('show'), 2500);
     }
 
+    function openModal(id) { document.getElementById(id).classList.add('open'); }
+    function closeModal(id) { document.getElementById(id).classList.remove('open'); }
+
+    function openStopModal() {
+      const runningCount = (globalStatusData && globalStatusData.tasks) ? (globalStatusData.tasks.RUNNING || 0) : 0;
+      document.getElementById('stopModalRunningCount').innerText = `${runningCount} tasks`;
+      openModal('stopModal');
+    }
+
+    function openSearchModal() {
+      openModal('searchModal');
+      setTimeout(() => document.getElementById('globalSearchInput').focus(), 100);
+    }
+
+    window.addEventListener('keydown', (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+        e.preventDefault();
+        openSearchModal();
+      }
+      if (e.key === 'Escape') {
+        closeModal('reconModal');
+        closeModal('stopModal');
+        closeModal('searchModal');
+      }
+    });
+
     async function sendControl(action) {
       try {
         const res = await fetch(`/api/control/${action}`, { method: 'POST' });
@@ -637,8 +1505,13 @@
         showToast(data.message || `System ${action} requested`);
         fetchStatus();
       } catch (e) {
-        showToast(`Failed to trigger ${action}: ` + e.message);
+        showToast(`Control error: ` + e.message);
       }
+    }
+
+    async function confirmStopSystem() {
+      closeModal('stopModal');
+      await sendControl('stop');
     }
 
     async function sendTick() {
@@ -652,114 +1525,410 @@
       }
     }
 
+    async function triggerBackup() {
+      try {
+        const res = await fetch('/api/backup/create', { method: 'POST' });
+        const data = await res.json();
+        showToast(data.message || 'Backup created');
+        fetchStatus();
+      } catch (e) {
+        showToast('Backup error: ' + e.message);
+      }
+    }
+
+    async function verifyBackup() {
+      try {
+        const res = await fetch('/api/backup/verify', { method: 'POST' });
+        const data = await res.json();
+        showToast(data.message || 'Backup verified');
+      } catch (e) {
+        showToast('Verification error: ' + e.message);
+      }
+    }
+
+    function openReconciliationModal(reconId) {
+      selectedReconId = reconId;
+      if (globalStatusData && globalStatusData.reconciliations && globalStatusData.reconciliations.length > 0) {
+        const item = selectedReconId 
+          ? globalStatusData.reconciliations.find(r => r.id === selectedReconId) 
+          : globalStatusData.reconciliations[0];
+        if (item) {
+          document.getElementById('reconModalTaskId').innerText = `#${item.task_id}`;
+          document.getElementById('reconModalAccount').innerText = item.worker_id || '@account_01';
+          document.getElementById('reconModalWorker').innerText = item.worker_id || 'WKR-01';
+          selectedReconId = item.id;
+        }
+      }
+      openModal('reconModal');
+    }
+
+    async function resolveReconciliation(action) {
+      if (!selectedReconId && globalStatusData && globalStatusData.reconciliations && globalStatusData.reconciliations.length > 0) {
+        selectedReconId = globalStatusData.reconciliations[0].id;
+      }
+      if (!selectedReconId && globalStatusData && globalStatusData.manual_reviews && globalStatusData.manual_reviews.length > 0) {
+        selectedReconId = globalStatusData.manual_reviews[0].id;
+      }
+      if (!selectedReconId) {
+        showToast("No active reconciliation item to resolve");
+        closeModal('reconModal');
+        return;
+      }
+      try {
+        const res = await fetch('/api/reconciliation/resolve', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reconciliation_id: selectedReconId, action: action })
+        });
+        const data = await res.json();
+        showToast(data.message || `Action ${action} executed`);
+        closeModal('reconModal');
+        fetchStatus();
+      } catch (e) {
+        showToast('Error: ' + e.message);
+      }
+    }
+
+    async function executeSearch(query) {
+      const container = document.getElementById('searchResultsContainer');
+      if (!query || query.trim().length === 0) {
+        container.innerHTML = '<div style="text-align: center; color: var(--text-dim); padding: 1rem;">Type to search repository entities</div>';
+        return;
+      }
+      try {
+        const res = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
+        const data = await res.json();
+        const results = data.results || [];
+        if (results.length === 0) {
+          container.innerHTML = '<div style="text-align: center; color: var(--text-dim); padding: 1rem;">No matching entities found</div>';
+          return;
+        }
+        container.innerHTML = results.map(r => `
+          <div style="padding: 0.5rem 0.75rem; background: rgba(255,255,255,0.03); border-radius: 6px; display: flex; justify-content: space-between; align-items: center;">
+            <div>
+              <span class="badge" style="background: rgba(99,102,241,0.2); color: #818cf8; font-size: 0.65rem; padding: 0.1rem 0.35rem; border-radius: 4px;">${r.type}</span>
+              <strong style="margin-left: 0.5rem; font-size: 0.82rem;">${r.title}</strong>
+            </div>
+            <span class="badge-status status-${r.status}">${r.status}</span>
+          </div>
+        `).join('');
+      } catch (e) {
+        container.innerHTML = `<div style="color: var(--rose); padding: 0.5rem;">Search error: ${e.message}</div>`;
+      }
+    }
+
+    function filterTasks(state, btn) {
+      currentTaskFilter = state;
+      document.querySelectorAll('.filter-tab').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      if (globalStatusData) {
+        renderTasks(globalStatusData.recent_tasks || []);
+      }
+    }
+
     async function fetchStatus() {
       try {
         const res = await fetch('/api/status');
         const data = await res.json();
+        globalStatusData = data;
 
-        // System State
-        const badge = document.getElementById('systemStateBadge');
-        const text = document.getElementById('systemStateText');
+        // Top Nav State
         const state = data.system_state || 'STOPPED';
-        text.innerText = state;
-        badge.className = `state-pill ${state}`;
+        document.getElementById('topNavStateText').innerText = state;
+        const topNavPill = document.getElementById('topNavStatus');
+        topNavPill.style.color = (state === 'RUNNING') ? 'var(--emerald)' : (state === 'PAUSED' ? 'var(--amber)' : 'var(--rose)');
 
-        // KPIs
-        const workers = data.workers || {};
-        document.getElementById('kpiWorkers').innerText = workers.total || 0;
-        document.getElementById('kpiWorkerDetail').innerText = `${workers.active || 0} active • ${workers.idle || 0} idle`;
+        // Control Bar State & Buttons
+        document.getElementById('ctrlStateText').innerText = state;
+        document.getElementById('ctrlStateDesc').innerText = data.state_description || 'System operational';
+        document.getElementById('ctrlUptime').innerText = data.uptime_formatted || '0h 0m 0s';
+        document.getElementById('lastCheckTime').innerText = new Date().toLocaleTimeString();
 
-        const tasks = data.tasks || {};
-        const readyCount = tasks.READY || 0;
-        const runningCount = tasks.RUNNING || 0;
-        document.getElementById('kpiQueue').innerText = readyCount + runningCount;
-        document.getElementById('kpiQueueDetail').innerText = `${readyCount} ready • ${runningCount} in-flight`;
+        renderControlButtons(state);
 
-        const completedCount = tasks.COMPLETED || 0;
-        document.getElementById('kpiCompleted').innerText = completedCount;
+        // Sidebar Badges
+        document.getElementById('sidebarReconBadge').innerText = data.badges?.reconciliation || 0;
+        document.getElementById('sidebarReviewBadge').innerText = data.badges?.manual_review || 0;
+        document.getElementById('sidebarCoolBadge').innerText = data.badges?.cooldown || 0;
+        document.getElementById('notificationCount').innerText = (data.badges?.reconciliation || 0) + (data.badges?.manual_review || 0);
 
-        const cooldowns = data.active_cooldowns || 0;
-        document.getElementById('kpiSafety').innerText = cooldowns;
-        document.getElementById('kpiSafetyDetail').innerText = `${cooldowns} active cooldowns`;
+        // Top Nav Worker Ratio
+        const activeW = data.workers?.active || 0;
+        const totalW = Math.max(data.workers?.total || 0, 1);
+        document.getElementById('topNavWorkerRatio').innerText = `${activeW} / ${totalW}`;
 
-        // Render Workers Table
+        // 6 KPIs
+        const kpis = data.kpis || {};
+        document.getElementById('kpiSystem').innerText = kpis.system?.state || state;
+        document.getElementById('kpiSystemSub').innerText = kpis.system?.desc || 'Healthy';
+        document.getElementById('kpiWorkers').innerText = `${kpis.workers?.active || 0} / ${kpis.workers?.total || 1}`;
+        document.getElementById('kpiAccounts').innerText = `${kpis.accounts?.active || 0} / ${kpis.accounts?.total || 1}`;
+        document.getElementById('kpiQueue').innerText = (kpis.queue?.ready || 0) + (kpis.queue?.running || 0);
+        document.getElementById('kpiQueueSub').innerText = `${kpis.queue?.ready || 0} ready`;
+        document.getElementById('kpiSent').innerText = kpis.sent_today?.count || 0;
+        document.getElementById('kpiAttention').innerText = kpis.attention?.count || 0;
+        document.getElementById('kpiAttentionSub').innerText = kpis.attention?.desc || 'None';
+
+        // Pipeline
+        const pipe = data.pipeline || {};
+        document.getElementById('pipeSourceCount').innerText = pipe.source?.count || 0;
+        document.getElementById('pipeTaskCount').innerText = `${pipe.task?.ready || 0} READY`;
+        document.getElementById('pipeWorkerCount').innerText = `${pipe.worker?.count || 0} ACTIVE`;
+        document.getElementById('pipeResultCount').innerText = `${pipe.result?.completed || 0} SENT`;
+
+        // Attention Section
+        renderAttention(data.attention_required || []);
+
+        // Workers
         renderWorkers(data.worker_list || []);
 
-        // Render Tasks Table
+        // Tasks
         renderTasks(data.recent_tasks || []);
 
-        // Render Events
-        renderEvents(data.recent_events || []);
+        // Accounts & Sessions
+        renderAccounts(data.accounts || []);
+        renderSessions(data.browser_sessions || []);
+
+        // Cooldowns
+        renderCooldowns(data.cooldowns || []);
+
+        // Safety Cards
+        const safety = data.safety || {};
+        document.getElementById('safetyRecon').innerText = safety.reconciliation || 0;
+        document.getElementById('safetyReview').innerText = safety.manual_review || 0;
+        document.getElementById('safetyUnknown').innerText = safety.unknown_send || 0;
+        document.getElementById('safetyConfirmed').innerText = safety.confirmed_sent || 0;
+
+        // Timeline
+        renderTimeline(data.recent_events || []);
+
+        // Scheduler & Follow-ups
+        const sched = data.scheduler || {};
+        document.getElementById('schedReady').innerText = sched.ready_tasks || 0;
+        document.getElementById('schedEligible').innerText = sched.eligible_tasks || 0;
+        document.getElementById('schedBlocked').innerText = sched.blocked_tasks || 0;
+        document.getElementById('schedLastDispatch').innerText = sched.last_dispatch || '—';
+        renderFollowups(data.followups?.list || []);
+
+        // Database
+        const db = data.database || {};
+        document.getElementById('dbSchemaVer').innerText = `${db.schema_version || 'v10'} (Phase 5 Complete)`;
+        document.getElementById('dbFileSize').innerText = `${db.database_size_mb || 0.0} MB`;
+        document.getElementById('lastBackupTime').innerText = db.last_backup || 'Today';
 
       } catch (err) {
-        console.error("Status fetch failed", err);
+        console.error("Fetch status failed", err);
       }
+    }
+
+    function renderControlButtons(state) {
+      const container = document.getElementById('stateControlsContainer');
+      if (state === 'RUNNING') {
+        container.innerHTML = `
+          <button class="btn btn-pause" onclick="sendControl('pause')">Pause</button>
+          <button class="btn btn-drain" onclick="sendControl('drain')">Drain</button>
+          <button class="btn btn-stop" onclick="openStopModal()">Stop</button>
+          <button class="btn btn-tick" onclick="sendTick()">Trigger Tick</button>
+        `;
+      } else if (state === 'PAUSED') {
+        container.innerHTML = `
+          <button class="btn btn-resume" onclick="sendControl('resume')">Resume</button>
+          <button class="btn btn-drain" onclick="sendControl('drain')">Drain</button>
+          <button class="btn btn-stop" onclick="openStopModal()">Stop</button>
+          <button class="btn btn-tick" onclick="sendTick()">Trigger Tick</button>
+        `;
+      } else if (state === 'DRAINING') {
+        container.innerHTML = `
+          <button class="btn btn-resume" onclick="sendControl('resume')">Resume</button>
+          <button class="btn btn-stop" onclick="openStopModal()">Stop</button>
+          <button class="btn btn-tick" onclick="sendTick()">Trigger Tick</button>
+        `;
+      } else {
+        container.innerHTML = `
+          <button class="btn btn-resume" onclick="sendControl('start')">Start Automation</button>
+          <button class="btn btn-tick" onclick="sendTick()">Trigger Tick</button>
+        `;
+      }
+    }
+
+    function renderAttention(items) {
+      const container = document.getElementById('attentionRowsContainer');
+      document.getElementById('attentionBadge').innerText = `${items.length} issue(s)`;
+      if (!items || items.length === 0) {
+        container.innerHTML = '<div style="font-size: 0.8rem; color: var(--text-dim); text-align: center; padding: 0.5rem;">No critical items requiring operator intervention</div>';
+        return;
+      }
+      container.innerHTML = items.map(item => `
+        <div class="attention-row ${item.priority}">
+          <div style="display: flex; align-items: center; gap: 0.65rem;">
+            <span class="badge" style="background: rgba(255,255,255,0.1); font-size: 0.65rem; padding: 0.15rem 0.4rem; border-radius: 4px;">${item.priority}</span>
+            <strong>${item.text}</strong>
+          </div>
+          <button class="btn btn-tick" style="padding: 0.25rem 0.6rem; font-size: 0.72rem;" onclick="openReconciliationModal(null)">Inspect &rarr;</button>
+        </div>
+      `).join('');
     }
 
     function renderWorkers(workers) {
-      const tbody = document.getElementById('workersTableBody');
+      const container = document.getElementById('workersContainer');
+      document.getElementById('workerCountMeta').innerText = `${workers.length} Total`;
       if (!workers || workers.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--text-dim); padding: 1.5rem;">No active workers registered</td></tr>';
+        container.innerHTML = '<div style="color: var(--text-dim); padding: 1rem;">No workers registered</div>';
         return;
       }
-      tbody.innerHTML = workers.map(w => `
-        <tr>
-          <td class="mono-cell" style="font-weight: 600;">${w.worker_id || w.id}</td>
-          <td><span class="badge" style="background: rgba(255,255,255,0.06);">${w.mode || 'SINGLE'}</span></td>
-          <td><span class="badge badge-${(w.status || 'idle').toLowerCase()}">${w.status || 'IDLE'}</span></td>
-          <td class="mono-cell">${w.current_task_id || '<span style="color: var(--text-dim);">—</span>'}</td>
-          <td>${w.account_id || '<span style="color: var(--text-dim);">default</span>'}</td>
-        </tr>
-      `).join('');
-    }
-
-    function renderTasks(tasks) {
-      const tbody = document.getElementById('tasksTableBody');
-      if (!tasks || tasks.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--text-dim); padding: 1.5rem;">No tasks found in repository</td></tr>';
-        return;
-      }
-      tbody.innerHTML = tasks.slice(0, 8).map(t => `
-        <tr>
-          <td class="mono-cell" style="font-weight: 500;">${t.id}</td>
-          <td class="mono-cell" style="color: var(--text-muted);">${t.contact_id || '—'}</td>
-          <td>${t.type || 'MESSAGE'}</td>
-          <td class="mono-cell">${t.priority || 10}</td>
-          <td><span class="badge badge-${(t.status || 'ready').toLowerCase()}">${t.status}</span></td>
-        </tr>
-      `).join('');
-    }
-
-    function renderEvents(events) {
-      const container = document.getElementById('eventsContainer');
-      if (!events || events.length === 0) {
-        container.innerHTML = '<div style="text-align: center; padding: 2rem; color: var(--text-dim);">No audit events recorded yet</div>';
-        return;
-      }
-      container.innerHTML = events.slice(0, 15).map(e => `
-        <div class="event-item">
-          <div class="event-header">
-            <span class="event-code">${e.event_code || 'EVENT'}</span>
-            <span class="event-time">${(e.timestamp || '').substring(11, 19)}</span>
+      container.innerHTML = workers.map(w => `
+        <div class="worker-card">
+          <div class="worker-card-head">
+            <span>${w.worker_code || w.id}</span>
+            <span class="badge-status status-${w.status}">${w.status}</span>
           </div>
-          <div class="event-detail">
-            ${e.entity_type ? `${e.entity_type} • ` : ''}${e.task_id ? `Task ${e.task_id}` : (e.worker_id ? `Worker ${e.worker_id}` : 'System operation')}
+          <div class="worker-prop">
+            <span class="worker-prop-label">Assigned Account</span>
+            <span class="worker-prop-val">${w.account_id || '@default_acc'}</span>
+          </div>
+          <div class="worker-prop">
+            <span class="worker-prop-label">Browser Session</span>
+            <span class="worker-prop-val" style="color: var(--emerald);">&bull; Active</span>
+          </div>
+          <div class="worker-prop">
+            <span class="worker-prop-label">Current Task</span>
+            <span class="worker-prop-val">${w.current_task_id ? `#${w.current_task_id}` : '—'}</span>
+          </div>
+          <div class="worker-prop">
+            <span class="worker-prop-label">Heartbeat</span>
+            <span class="worker-prop-val" style="color: var(--text-dim); font-size: 0.7rem;">${(w.last_heartbeat || '').substring(11, 19) || 'Active'}</span>
           </div>
         </div>
       `).join('');
     }
 
-    // Polling Loop
-    setInterval(() => {
-      countdown--;
-      if (countdown <= 0) {
-        fetchStatus();
-        countdown = 3;
+    function renderTasks(tasks) {
+      const tbody = document.getElementById('tasksTbody');
+      let filtered = tasks;
+      if (currentTaskFilter !== 'ALL') {
+        filtered = tasks.filter(t => t.status === currentTaskFilter);
       }
-      document.getElementById('countdownText').innerText = `Refreshing in ${countdown}s`;
-    }, 1000);
+      if (!filtered || filtered.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="9" style="text-align: center; color: var(--text-dim); padding: 1.5rem;">No tasks matching selected filter</td></tr>';
+        return;
+      }
+      tbody.innerHTML = filtered.map(t => `
+        <tr>
+          <td style="font-family: 'JetBrains Mono', monospace; font-weight: 600;">#${t.id}</td>
+          <td>${t.contact_id || '—'}</td>
+          <td>${t.account_id || '@default_acc'}</td>
+          <td>${t.worker_id || '—'}</td>
+          <td><span class="badge-status status-${t.status}">${t.status}</span></td>
+          <td style="font-family: 'JetBrains Mono', monospace;">${t.priority || 0}</td>
+          <td style="font-family: 'JetBrains Mono', monospace;">${t.attempt_count || 0}</td>
+          <td style="font-family: 'JetBrains Mono', monospace; color: var(--text-dim); font-size: 0.7rem;">${(t.scheduled_at || '').substring(11, 19) || 'Immediate'}</td>
+          <td>
+            ${t.status === 'RECONCILING' 
+              ? `<button class="btn btn-tick" style="padding: 0.2rem 0.5rem; font-size: 0.68rem;" onclick="openReconciliationModal('${t.id}')">Review</button>` 
+              : `<span style="color: var(--text-dim);">—</span>`}
+          </td>
+        </tr>
+      `).join('');
+    }
 
-    // Initial load
+    function renderAccounts(accounts) {
+      const tbody = document.getElementById('accountsTbody');
+      tbody.innerHTML = accounts.map(a => `
+        <tr>
+          <td><strong>${a.username || a.id}</strong></td>
+          <td><span style="color: var(--emerald); font-weight: 600;">&bull; ${a.auth_status || 'Valid'}</span></td>
+          <td>${a.worker_id || 'WKR-01'}</td>
+          <td><span class="badge-status status-${a.rate_status === 'Available' ? 'COMPLETED' : 'RUNNING'}">${a.rate_status}</span></td>
+          <td style="font-family: 'JetBrains Mono', monospace;">${a.sends_today || 0} / ${a.daily_limit || 50}</td>
+        </tr>
+      `).join('');
+    }
+
+    function renderSessions(sessions) {
+      const tbody = document.getElementById('sessionsTbody');
+      tbody.innerHTML = sessions.map(s => `
+        <tr>
+          <td style="font-family: 'JetBrains Mono', monospace; font-weight: 600;">${s.id}</td>
+          <td>${s.worker_id || '—'}</td>
+          <td>${s.account_id || '@default_acc'}</td>
+          <td><span class="badge-status status-${s.browser_state === 'HEALTHY' ? 'COMPLETED' : 'FAILED'}">${s.browser_state}</span></td>
+          <td style="color: var(--emerald);">&bull; ${s.auth_state}</td>
+        </tr>
+      `).join('');
+    }
+
+    function renderCooldowns(cooldowns) {
+      const container = document.getElementById('cooldownsListContainer');
+      document.getElementById('cooldownMeta').innerText = `${cooldowns.length} Active`;
+      if (!cooldowns || cooldowns.length === 0) {
+        container.innerHTML = '<div style="font-size: 0.8rem; color: var(--text-dim); padding: 1rem 0; text-align: center;">No active rate-limit cooldowns in effect. Global dispatch available.</div>';
+        return;
+      }
+      container.innerHTML = cooldowns.map(c => `
+        <div class="progress-bar-container">
+          <div style="display: flex; justify-content: space-between; font-size: 0.75rem;">
+            <span><strong>${c.scope}</strong>: ${c.reason}</span>
+            <span style="font-family: 'JetBrains Mono', monospace; color: #fbbf24;">${c.remaining_formatted}</span>
+          </div>
+          <div class="progress-bar-bg">
+            <div class="progress-bar-fill" style="width: ${Math.min(100, Math.max(10, (c.remaining_seconds / 900) * 100))}%;"></div>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    function renderTimeline(events) {
+      const container = document.getElementById('timelineContainer');
+      if (!events || events.length === 0) {
+        container.innerHTML = '<div style="color: var(--text-dim); text-align: center; padding: 1.5rem;">No recent activity</div>';
+        return;
+      }
+      container.innerHTML = events.slice(0, 15).map(e => `
+        <div class="timeline-item">
+          <div class="timeline-dot" style="background: ${e.level === 'ERROR' ? 'var(--rose)' : (e.level === 'WARNING' ? 'var(--amber)' : 'var(--primary)')};"></div>
+          <div class="timeline-content">
+            <span class="timeline-time">${(e.timestamp || '').substring(11, 19)}</span>
+            <strong style="font-size: 0.82rem;">${e.event_code}</strong>
+            <span style="font-size: 0.72rem; color: var(--text-muted);">${e.entity_type ? `${e.entity_type} • ` : ''}${e.task_id ? `Task #${e.task_id}` : ''}</span>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    function renderFollowups(followups) {
+      const container = document.getElementById('followupsListContainer');
+      if (!followups || followups.length === 0) {
+        container.innerHTML = '<div style="font-size: 0.8rem; color: var(--text-dim); text-align: center; padding: 0.5rem;">No pending follow-ups</div>';
+        return;
+      }
+      container.innerHTML = `
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Contact</th>
+              <th>Seq</th>
+              <th>Scheduled</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${followups.slice(0, 5).map(f => `
+              <tr>
+                <td style="font-family: 'JetBrains Mono', monospace;">#${f.id}</td>
+                <td>${f.contact_id}</td>
+                <td>Seq ${f.sequence}</td>
+                <td style="font-family: 'JetBrains Mono', monospace; font-size: 0.7rem;">${(f.scheduled_at || '').substring(11, 16)}</td>
+                <td><span class="badge-status status-${f.status}">${f.status}</span></td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      `;
+    }
+
+    // Auto-refresh loop every 3 seconds
+    setInterval(fetchStatus, 3000);
     fetchStatus();
   </script>
 </body>

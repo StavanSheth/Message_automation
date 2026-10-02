@@ -31,8 +31,8 @@ def test_dashboard_root_html(test_app_and_server):
         assert resp.status == 200
         assert "text/html" in resp.headers.get("Content-Type", "")
         body = resp.read().decode("utf-8")
-        assert "Instagram Automation" in body
-        assert "Live Observability Log" in body
+        assert "Message Automation" in body
+        assert "Execution Pipeline" in body
 
 
 def test_dashboard_api_status(test_app_and_server):
