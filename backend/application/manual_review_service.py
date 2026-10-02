@@ -37,11 +37,22 @@ class ManualReviewService:
         task_repo: TaskRepository,
         message_repo: Optional[MessageRepository] = None,
         event_repo: Optional[EventRepository] = None,
+        reconciliation_repo: Optional[Any] = None,
     ):
         self.manual_review_repo = manual_review_repo
         self.task_repo = task_repo
         self.message_repo = message_repo
         self.event_repo = event_repo
+        if reconciliation_repo is not None:
+            self.reconciliation_repo = reconciliation_repo
+        elif hasattr(task_repo, "db"):
+            from backend.repositories.reconciliation_repo import ReconciliationRepository
+            try:
+                self.reconciliation_repo = ReconciliationRepository(task_repo.db)
+            except Exception:
+                self.reconciliation_repo = None
+        else:
+            self.reconciliation_repo = None
 
     def list_pending(self) -> List[ManualReviewItem]:
         """List all pending items requiring operator attention."""
@@ -110,6 +121,21 @@ class ManualReviewService:
             resolved_by=operator,
             resolution_notes=operator_notes or evidence,
         )
+
+        # Also resolve corresponding reconciliation record if exists
+        if self.reconciliation_repo:
+            try:
+                rec = self.reconciliation_repo.get_by_task_id(item.task_id)
+                if rec and rec.state == "PENDING":
+                    self.reconciliation_repo.update_resolution(
+                        record_id=rec.id,
+                        state="RESOLVED",
+                        resolution=resolution_clean,
+                        resolution_source=f"MANUAL_REVIEW:{operator}",
+                        observed_state=operator_notes or evidence,
+                    )
+            except Exception as e:
+                logger.warning(f"Could not resolve reconciliation record for task {item.task_id}: {e}")
 
         if self.event_repo:
             self.event_repo.record(

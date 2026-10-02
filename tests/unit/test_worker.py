@@ -90,7 +90,7 @@ def test_worker_process_next_task_success(worker_env):
     mock_executor.execute_source_sync.return_value = True
 
     worker.start()
-    success = worker.process_next_task(executor=mock_executor)
+    success = worker.process_next_task(executor=mock_executor, assigned_task=task)
 
     assert success is True
     assert worker.status == WorkerStatus.IDLE
@@ -107,7 +107,7 @@ def test_worker_process_next_task_exception_returns_to_idle(worker_env):
     mock_executor.execute_source_sync.side_effect = RuntimeError("Simulated crash")
 
     worker.start()
-    success = worker.process_next_task(executor=mock_executor)
+    success = worker.process_next_task(executor=mock_executor, assigned_task=task)
 
     assert success is False
     # Invariant: worker is NEVER left permanently BUSY

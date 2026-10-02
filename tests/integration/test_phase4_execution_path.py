@@ -106,7 +106,7 @@ def test_mandatory_execution_service_path_and_identity_recording(execution_path_
     msg_repo.create(Message(id="m-path-run", task_id="t-path-run", contact_id="c-path-1", body="Hello!"))
 
     # Worker executes through TaskExecutor -> ExecutionService
-    success = worker.process_next_task(executor=task_executor)
+    success = worker.process_next_task(executor=task_executor, assigned_task=task)
     assert success is True
 
     # Verify insta_service was called by ExecutionService

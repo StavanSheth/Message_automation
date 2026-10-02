@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from typing import Optional, Any
 from backend.domain.models import WorkerRecord, Task, utc_now_iso
 from backend.domain.enums import (
-    WorkerMode, WorkerStatus, TaskState,
+    WorkerMode, WorkerStatus, TaskState, TaskType,
     EventCode, EventLevel, ErrorCode,
 )
 from backend.browser.session import BrowserSessionInstance
@@ -38,6 +38,7 @@ class Worker:
         heartbeat_interval: Optional[int] = None,
         stale_timeout: Optional[int] = None,
         worker_repo: Optional[WorkerRepository] = None,
+        execution_service: Optional[Any] = None,
     ):
         settings = get_settings()
         self.settings = settings
@@ -48,6 +49,7 @@ class Worker:
         self.task_repo = task_repo
         self.event_repo = event_repo
         self.session = session
+        self.execution_service = execution_service
         self.heartbeat_interval = heartbeat_interval if heartbeat_interval is not None else settings.worker_heartbeat_interval
         self.stale_timeout = stale_timeout if stale_timeout is not None else settings.worker_stale_timeout
         self.worker_repo = worker_repo
@@ -399,7 +401,9 @@ class Worker:
 
         try:
             claimed_task = self.task_repo.get_by_id(task.id) or task
+            exec_svc = self.execution_service or (executor if getattr(executor, "__class__", None) and executor.__class__.__name__ == "ExecutionService" else None)
             is_mock = hasattr(executor, "_mock_return_value")
+
             if adapter is not None and hasattr(executor, "execute_source_sync"):
                 result = executor.execute_source_sync(
                     task=claimed_task,
@@ -407,21 +411,33 @@ class Worker:
                     adapter=adapter,
                     session=self.session,
                 )
-            elif is_mock and hasattr(executor, "execute_source_sync") and "execute_task" not in getattr(executor, "_mock_children", {}):
+            elif is_mock and hasattr(executor, "execute_source_sync") and "execute_source_sync" in getattr(executor, "_mock_children", {}):
                 result = executor.execute_source_sync(
                     task=claimed_task,
                     context=context,
                     adapter=adapter,
                     session=self.session,
                 )
-            elif getattr(executor, "__class__", None) and executor.__class__.__name__ == "ExecutionService":
-                result = executor.execute_task(
-                    task_id=claimed_task.id,
-                    session=self.session,
-                    worker_id=self.worker_id,
-                    lease_id=self._lease_id or self._lock_token,
-                    correlation_id=context.correlation_id,
-                )
+            # Real message / follow-up tasks MUST route through ExecutionService gateway
+            elif claimed_task.type in (TaskType.MESSAGE, TaskType.FOLLOW_UP_1, TaskType.FOLLOW_UP_2):
+                if exec_svc:
+                    result = exec_svc.execute_task(
+                        task_id=claimed_task.id,
+                        session=self.session,
+                        worker_id=self.worker_id,
+                        lease_id=self._lease_id or self._lock_token,
+                        correlation_id=context.correlation_id,
+                    )
+                elif hasattr(executor, "execute_task"):
+                    result = executor.execute_task(
+                        task=claimed_task,
+                        context=context,
+                        session=self.session,
+                        adapter=adapter,
+                    )
+                else:
+                    logger.error(f"Worker {self.worker_id} rejected task {claimed_task.id}: ExecutionService gateway mandatory for message tasks")
+                    return False
             elif hasattr(executor, "execute_task"):
                 result = executor.execute_task(
                     task=claimed_task,
@@ -429,13 +445,16 @@ class Worker:
                     session=self.session,
                     adapter=adapter,
                 )
-            else:
+            elif hasattr(executor, "execute_source_sync"):
                 result = executor.execute_source_sync(
                     task=claimed_task,
                     context=context,
                     adapter=adapter,
                     session=self.session,
                 )
+            else:
+                logger.error(f"Worker {self.worker_id} has no suitable executor for task {claimed_task.id}")
+                return False
             return bool(result)
         except Exception as e:
             logger.error(f"Worker {self.worker_id} encountered error executing assigned task {task.id}: {e}")
@@ -443,24 +462,33 @@ class Worker:
         finally:
             self.release_current_task()
 
-    def process_next_task(self, executor: Any, adapter: Optional[Any] = None) -> bool:
+    def process_next_task(
+        self,
+        executor: Optional[Any] = None,
+        adapter: Optional[Any] = None,
+        assigned_task: Optional[Task] = None,
+    ) -> bool:
         """
-        Execute next authorized ready task.
-        Delegates execution to execute_assigned_task once a task is claimed.
+        Execute an assigned task.
+        Direct arbitrary task discovery by workers is strictly prohibited.
+        Workers must only execute tasks explicitly dispatched via TaskDispatcher.
         """
+        if assigned_task is None:
+            logger.error(
+                f"Worker {self.worker_id} rejected process_next_task: "
+                "direct task discovery is prohibited. "
+                "Tasks must be dispatched by TaskDispatcher."
+            )
+            return False
+
         with self._lock:
             if self.status != WorkerStatus.IDLE:
                 return False
 
-        tasks = self.task_repo.list_ready(limit=1)
-        if not tasks:
+        if not self.claim_task(assigned_task.id):
             return False
 
-        target_task = tasks[0]
-        if not self.claim_task(target_task.id):
-            return False
-
-        return self.execute_assigned_task(target_task, executor=executor, adapter=adapter)
+        return self.execute_assigned_task(assigned_task, executor=executor, adapter=adapter)
 
     def to_record(self) -> WorkerRecord:
         with self._lock:

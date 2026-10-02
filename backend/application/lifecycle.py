@@ -37,6 +37,7 @@ class ApplicationLifecycleManager:
         browser_manager: Optional[BrowserManager] = None,
         worker_manager: Optional[DefaultWorkerManager] = None,
         scheduler: Optional[Scheduler] = None,
+        retention_service: Optional[Any] = None,
     ):
         self.db = db
         self.task_repo = task_repo
@@ -47,6 +48,15 @@ class ApplicationLifecycleManager:
         self.browser_manager = browser_manager
         self.worker_manager = worker_manager
         self.scheduler = scheduler
+        self.retention_service = retention_service
+
+    def run_retention_sweep(self) -> Dict[str, int]:
+        """Execute controlled historical data pruning through lifecycle manager."""
+        if self.retention_service:
+            return self.retention_service.cleanup_expired_data()
+        from backend.application.retention_service import RetentionService
+        ret_svc = RetentionService(self.db)
+        return ret_svc.cleanup_expired_data()
 
     def startup_recovery(self) -> Dict[str, Any]:
         """

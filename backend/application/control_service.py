@@ -204,6 +204,11 @@ class ApplicationControlService:
 
         # 2. Worker health & challenge/checkpoint inspection
         if self.worker_manager:
+            if hasattr(self.worker_manager, "active_count") and self.worker_manager.active_count == 0:
+                logger.warning("Resume rejected: no active workers available")
+                self._transition_to(SystemState.DEGRADED, "No active workers available during resume")
+                return False
+
             for worker_rec in self.worker_manager.list_workers():
                 # If any worker was quarantined for challenge/checkpoint -> escalate to MANUAL_INTERVENTION
                 reason_lower = str(getattr(worker_rec, "quarantine_reason", "") or "").lower()
@@ -211,6 +216,21 @@ class ApplicationControlService:
                     logger.warning("Resume escalated to MANUAL_INTERVENTION: challenge/checkpoint detected")
                     self._transition_to(SystemState.MANUAL_INTERVENTION, "Challenge or checkpoint pending resolution")
                     return False
+
+            # Inspect active sessions for challenge/checkpoint/login
+            if hasattr(self.worker_manager, "_workers"):
+                for w in self.worker_manager._workers.values():
+                    sess = getattr(w, "session", None)
+                    if sess:
+                        auth_st = getattr(sess, "auth_status", None)
+                        if auth_st in ("CHALLENGE", "CHECKPOINT"):
+                            logger.warning("Resume escalated to MANUAL_INTERVENTION: session checkpoint detected")
+                            self._transition_to(SystemState.MANUAL_INTERVENTION, "Session checkpoint pending resolution")
+                            return False
+                        if auth_st in ("LOGIN_REQUIRED", "SESSION_EXPIRED"):
+                            logger.warning("Resume degraded: session requires login")
+                            self._transition_to(SystemState.DEGRADED, "Session requires login")
+                            return False
 
         # 3. Transition to RUNNING
         if not self._transition_to(SystemState.RUNNING, reason):

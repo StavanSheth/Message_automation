@@ -171,7 +171,7 @@ def test_execution_context_propagation(worker_exec_env):
     task_repo.create(task)
 
     worker.start()
-    success = worker.process_next_task(executor=executor, adapter=source)
+    success = worker.process_next_task(executor=executor, adapter=source, assigned_task=task)
     assert success is True
 
     # Check TASK_EXECUTION_STARTED event payload
@@ -199,7 +199,7 @@ def test_successful_execution_completion(worker_exec_env):
     task_repo.create(task)
 
     worker.start()
-    success = worker.process_next_task(executor=executor, adapter=source)
+    success = worker.process_next_task(executor=executor, adapter=source, assigned_task=task)
     assert success is True
 
     completed_task = task_repo.get_by_id("t-comp-test")
@@ -231,7 +231,7 @@ def test_failed_execution_handling(worker_exec_env):
     task_repo.create(task)
 
     worker.start()
-    success = worker.process_next_task(executor=executor, adapter=failing_source)
+    success = worker.process_next_task(executor=executor, adapter=failing_source, assigned_task=task)
     assert success is False
 
     t = task_repo.get_by_id("t-fail-test")

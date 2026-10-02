@@ -66,6 +66,7 @@ class InstagramAutomationService:
         reconciliation_service: Optional[Any] = None,
         followup_service: Optional[Any] = None,
         cooldown_repo: Optional[Any] = None,
+        throttling_service: Optional[Any] = None,
     ):
         self.task_repo = task_repo
         self.contact_repo = contact_repo
@@ -75,6 +76,7 @@ class InstagramAutomationService:
         self.error_repo = error_repo
         self.verification_repo = verification_repo
         self.settings = settings or get_settings()
+        self.throttling_service = throttling_service
 
         from backend.repositories.cooldown_repo import CooldownRepository
         self.cooldown_repo = cooldown_repo or (
@@ -121,12 +123,25 @@ class InstagramAutomationService:
         error_code: ErrorCode,
         worker_id: Optional[str] = None,
         session_id: Optional[str] = None,
+        account_id: Optional[str] = None,
     ) -> None:
         """Activate both in-memory and persistent cross-process rate-limit cooldown."""
         duration = self._rate_limit_cooldown_seconds
         expires_dt = datetime.now(timezone.utc) + timedelta(seconds=duration)
         self._rate_limit_cooldown_until = expires_dt
         logger.warning(f"Rate-limit cooldown activated for {duration}s: {reason}")
+
+        if self.throttling_service:
+            try:
+                self.throttling_service.trigger_rate_limit(
+                    reason=reason,
+                    account_id=account_id,
+                    worker_id=worker_id,
+                    session_id=session_id,
+                    duration_seconds=duration,
+                )
+            except Exception as ex:
+                logger.warning(f"Could not trigger rate limit in throttling_service: {ex}")
 
         if self.cooldown_repo:
             try:

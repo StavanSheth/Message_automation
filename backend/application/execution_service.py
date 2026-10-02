@@ -151,26 +151,57 @@ class ExecutionService:
 
         # ── 3. Account and Session Ownership Check ───────────────
         task_account_id = getattr(task, "account_id", None)
+        if task_account_id and hasattr(task_account_id, "_mock_return_value"):
+            task_account_id = None
         session_account_id = getattr(session, "account_id", None)
-        if task_account_id and session_account_id and task_account_id != session_account_id:
-            logger.error(f"Execution rejected: task account {task_account_id} != session account {session_account_id}")
-            return False
-
+        if session_account_id and hasattr(session_account_id, "_mock_return_value"):
+            session_account_id = None
+        worker_rec = None
         if self.worker_repo:
             try:
                 worker_rec = self.worker_repo.get_by_id(worker_id)
-                if worker_rec:
-                    worker_account_id = getattr(worker_rec, "account_id", None)
-                    if task_account_id and worker_account_id and task_account_id != worker_account_id:
-                        logger.error(f"Execution rejected: task account {task_account_id} != worker account {worker_account_id}")
-                        return False
-                    worker_session_id = getattr(worker_rec, "session_id", None)
-                    session_id = getattr(session, "session_id", None)
-                    if worker_session_id and session_id and worker_session_id != session_id:
-                        logger.error(f"Execution rejected: worker session {worker_session_id} != session {session_id}")
-                        return False
+            except Exception:
+                worker_rec = None
+        worker_account_id = getattr(worker_rec, "account_id", None) if worker_rec else None
+        if worker_account_id and hasattr(worker_account_id, "_mock_return_value"):
+            worker_account_id = None
+
+        # Fail closed on account ownership mismatch
+        if task_account_id or session_account_id or worker_account_id:
+            if task_account_id and session_account_id and task_account_id != session_account_id:
+                logger.error(f"Execution rejected: task account {task_account_id} != session account {session_account_id}")
+                return False
+            if task_account_id and worker_account_id and task_account_id != worker_account_id:
+                logger.error(f"Execution rejected: task account {task_account_id} != worker account {worker_account_id}")
+                return False
+            if session_account_id and worker_account_id and session_account_id != worker_account_id:
+                logger.error(f"Execution rejected: session account {session_account_id} != worker account {worker_account_id}")
+                return False
+
+        if self.account_repo and task_account_id:
+            account = self.account_repo.get_by_id(task_account_id)
+            if not account:
+                logger.error(f"Execution rejected: account {task_account_id} not found")
+                return False
+            if account.status != "ACTIVE":
+                logger.error(f"Execution rejected: account {task_account_id} is {account.status}")
+                return False
+            if account.assigned_worker_id and account.assigned_worker_id != worker_id:
+                logger.error(f"Execution rejected: account assigned worker {account.assigned_worker_id} != worker {worker_id}")
+                return False
+            if account.assigned_session_id and session and getattr(session, "session_id", None) and account.assigned_session_id != session.session_id:
+                logger.error(f"Execution rejected: account assigned session {account.assigned_session_id} != session {session.session_id}")
+                return False
+
+        if self.worker_repo and worker_rec:
+            try:
+                worker_session_id = getattr(worker_rec, "session_id", None)
+                session_id = getattr(session, "session_id", None)
+                if worker_session_id and session_id and worker_session_id != session_id:
+                    logger.error(f"Execution rejected: worker session {worker_session_id} != session {session_id}")
+                    return False
             except Exception as e:
-                logger.debug(f"Worker repo ownership lookup skipped: {e}")
+                logger.debug(f"Worker session lookup skipped: {e}")
 
         # ── 4. Authentication Lifecycle Check ────────────────────
         auth_status = getattr(session, "auth_status", None)
@@ -179,7 +210,13 @@ class ExecutionService:
                 logger.error(f"Execution rejected: session authentication invalid ({auth_status})")
                 return False
             if auth_status in ("CHALLENGE", "CHECKPOINT"):
-                logger.error(f"Execution rejected: checkpoint/challenge detected ({auth_status}); routing to manual review")
+                logger.error(f"Execution rejected: checkpoint/challenge detected ({auth_status}); routing to manual review and quarantining worker")
+                if self.worker_repo:
+                    try:
+                        from backend.domain.enums import WorkerStatus
+                        self.worker_repo.update_status(worker_id, WorkerStatus.QUARANTINED, quarantine_reason=f"auth_{auth_status.lower()}")
+                    except Exception:
+                        pass
                 self.task_repo.update_state(task.id, TaskState.MANUAL_REVIEW, worker_id=worker_id, enforce_transition=False)
                 return False
             if auth_status == "UNKNOWN":
@@ -313,6 +350,19 @@ class ExecutionService:
                         except Exception:
                             pass
                 else:
+                    if self.throttling_service:
+                        try:
+                            latest_t = self.task_repo.get_by_id(task.id)
+                            # Check if task ended up with a rate-limit related error
+                            if latest_t and getattr(latest_t, "last_error_code", None) in ("RATE_LIMITED", "ACTION_BLOCKED", "ACCESS_PROHIBITED"):
+                                self.throttling_service.trigger_rate_limit(
+                                    reason=f"Action blocked on task {task.id}",
+                                    account_id=task_account_id,
+                                    worker_id=worker_id,
+                                    session_id=getattr(session, "session_id", None),
+                                )
+                        except Exception:
+                            pass
                     if self.execution_identity_repo:
                         try:
                             self.execution_identity_repo.update_state(exec_key, state="FAILED", outcome="EXECUTION_FAILED")

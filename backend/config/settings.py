@@ -53,6 +53,7 @@ class AppSettings:
     event_retention_days: int = 30
     error_retention_days: int = 30
     minimum_send_delay_seconds: float = 5.0
+    daily_send_limit: int = 50
 
     def validate(self) -> None:
         """Validate configuration values."""
@@ -122,12 +123,20 @@ class AppSettings:
             raise ValidationError(f"max_retry_attempts must be positive, got {self.max_retry_attempts}")
         if self.diagnostic_retention < 0:
             raise ValidationError(f"diagnostic_retention must be non-negative, got {self.diagnostic_retention}")
-        if self.event_retention_days < 0:
-            raise ValidationError(f"event_retention_days must be non-negative, got {self.event_retention_days}")
+        if self.worker_stale_timeout <= self.worker_heartbeat_interval:
+            raise ValidationError(
+                f"worker_stale_timeout ({self.worker_stale_timeout}) must be greater than worker_heartbeat_interval ({self.worker_heartbeat_interval})"
+            )
+        if self.max_workers <= 0:
+            raise ValidationError(f"max_workers must be positive, got {self.max_workers}")
+        if self.daily_send_limit < 0:
+            raise ValidationError(f"daily_send_limit must be non-negative, got {self.daily_send_limit}")
+        if self.event_retention_days <= 0:
+            raise ValidationError(f"event_retention_days must be positive, got {self.event_retention_days}")
         if self.error_retention_days < 0:
             raise ValidationError(f"error_retention_days must be non-negative, got {self.error_retention_days}")
-        if self.minimum_send_delay_seconds < 0:
-            raise ValidationError(f"minimum_send_delay_seconds must be non-negative, got {self.minimum_send_delay_seconds}")
+        if self.minimum_send_delay_seconds <= 0:
+            raise ValidationError(f"minimum_send_delay_seconds must be positive, got {self.minimum_send_delay_seconds}")
 
     def validate_runtime_config(self) -> None:
         """Validate configuration on startup and reject invalid settings with clear ValidationError."""

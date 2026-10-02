@@ -29,12 +29,16 @@ class DefaultWorkerManager(WorkerManager):
         browser_manager: Optional[BrowserManager] = None,
         task_executor: Optional[Any] = None,
         worker_repo: Optional[Any] = None,
+        execution_service: Optional[Any] = None,
+        task_dispatcher: Optional[Any] = None,
     ):
         self.task_repo = task_repo
         self.event_repo = event_repo
         self.browser_manager = browser_manager
         self.task_executor = task_executor
         self.worker_repo = worker_repo
+        self.execution_service = execution_service
+        self.task_dispatcher = task_dispatcher
         self.settings = get_settings()
         self._workers: Dict[str, Worker] = {}
 
@@ -103,6 +107,7 @@ class DefaultWorkerManager(WorkerManager):
             heartbeat_interval=self.settings.worker_heartbeat_interval,
             stale_timeout=self.settings.worker_stale_timeout,
             worker_repo=self.worker_repo,
+            execution_service=self.execution_service,
         )
         worker.start()
         self._workers[worker_id] = worker
@@ -126,23 +131,20 @@ class DefaultWorkerManager(WorkerManager):
 
     def process_tasks(self, max_tasks: Optional[int] = None, adapter: Optional[Any] = None) -> int:
         """
-        Dispatch available tasks to idle workers.
-        Returns the number of tasks successfully processed.
+        Dispatch available tasks to idle workers via authoritative TaskDispatcher.
+        Direct worker polling via list_ready() is prohibited.
         """
-        if not self.task_executor:
-            logger.warning("No task_executor configured on DefaultWorkerManager")
-            return 0
+        if self.task_dispatcher:
+            return self.task_dispatcher.dispatch_ready_tasks(limit=max_tasks or 50)
 
-        processed = 0
-        for worker in list(self._workers.values()):
-            if max_tasks is not None and processed >= max_tasks:
-                break
-            if worker.status == WorkerStatus.IDLE:
-                success = worker.process_next_task(self.task_executor, adapter=adapter)
-                if success:
-                    processed += 1
-
-        return processed
+        from backend.scheduler.task_dispatcher import TaskDispatcher
+        dispatcher = TaskDispatcher(
+            task_repo=self.task_repo,
+            worker_manager=self,
+            throttling_service=getattr(self, "throttling_service", None),
+            control_service=getattr(self, "control_service", None),
+        )
+        return dispatcher.dispatch_ready_tasks(limit=max_tasks or 50)
 
     def list_workers(self) -> List[WorkerRecord]:
         return [w.to_record() for w in self._workers.values()]

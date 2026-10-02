@@ -303,7 +303,7 @@ class TestPhase2EndToEnd:
         task = Task(id="t-e2e-sync", contact_id="c-initial", type=TaskType.MESSAGE, status=TaskState.READY)
         _create_task(db, task)
 
-        success = worker.process_next_task(executor=executor, adapter=source_adapter)
+        success = worker.process_next_task(executor=executor, adapter=source_adapter, assigned_task=task)
         assert success is True
 
         completed_task = task_repo.get_by_id("t-e2e-sync")

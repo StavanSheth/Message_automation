@@ -189,17 +189,12 @@ class Scheduler:
         # ── Step 4: Query ready tasks ──────────────────────────────
         ready_tasks = self.task_repo.list_ready()
 
-        # ── Step 5: Dispatch to workers via TaskDispatcher ─────────
+        # ── Step 4: Dispatch to workers exclusively via TaskDispatcher ───
         if self.task_dispatcher:
             try:
                 self.task_dispatcher.dispatch_ready_tasks()
             except Exception as e:
                 logger.warning(f"Error dispatching tasks via TaskDispatcher: {e}")
-        elif self.worker_manager and hasattr(self.worker_manager, "process_tasks"):
-            try:
-                self.worker_manager.process_tasks()
-            except Exception as e:
-                logger.warning(f"Error dispatching tasks to worker manager: {e}")
 
         return ready_tasks
 
