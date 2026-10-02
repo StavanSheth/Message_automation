@@ -419,8 +419,10 @@ class Worker:
                     adapter=adapter,
                     session=self.session,
                 )
-            # Real message / follow-up tasks MUST route through ExecutionService gateway
+            # Real message / follow-up tasks MUST route through ExecutionService gateway - NO BYPASS
             elif claimed_task.type in (TaskType.MESSAGE, TaskType.FOLLOW_UP_1, TaskType.FOLLOW_UP_2):
+                if not exec_svc and hasattr(executor, "execution_service"):
+                    exec_svc = executor.execution_service
                 if exec_svc:
                     result = exec_svc.execute_task(
                         task_id=claimed_task.id,
@@ -429,15 +431,15 @@ class Worker:
                         lease_id=self._lease_id or self._lock_token,
                         correlation_id=context.correlation_id,
                     )
-                elif hasattr(executor, "execute_task"):
-                    result = executor.execute_task(
-                        task=claimed_task,
-                        context=context,
-                        session=self.session,
-                        adapter=adapter,
-                    )
+                    if not result:
+                        auth_status = getattr(self.session, "auth_status", None)
+                        if auth_status in ("CHALLENGE", "CHECKPOINT"):
+                            self.quarantine(f"auth_{auth_status.lower()}")
                 else:
-                    logger.error(f"Worker {self.worker_id} rejected task {claimed_task.id}: ExecutionService gateway mandatory for message tasks")
+                    logger.error(
+                        f"Worker {self.worker_id} rejected task {claimed_task.id}: "
+                        "ExecutionService gateway mandatory for message tasks; alternate executor bypass prohibited"
+                    )
                     return False
             elif hasattr(executor, "execute_task"):
                 result = executor.execute_task(

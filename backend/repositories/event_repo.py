@@ -139,6 +139,13 @@ class EventRepository(BaseRepository):
         cursor = conn.execute(query, tuple(params))
         return [self._row_to_event(row) for row in cursor.fetchall()]
 
+    def get_by_id(self, event_id: str) -> Optional[Event]:
+        """Fetch a single event by ID."""
+        conn = self.db.get_connection()
+        cur = conn.execute("SELECT * FROM events WHERE id = ?;", (event_id,))
+        row = cur.fetchone()
+        return self._row_to_event(row) if row else None
+
     def _row_to_event(self, row: sqlite3.Row) -> Event:
         keys = row.keys()
         return Event(

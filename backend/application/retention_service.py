@@ -80,8 +80,36 @@ class RetentionService:
 
         try:
             with self.db.transaction() as conn:
-                # 1. Prune old events
-                cur = conn.execute("DELETE FROM events WHERE timestamp < ?;", (ev_cutoff,))
+                # 1. Prune old events safely:
+                # NEVER delete events linked to active tasks, active/pending reconciliations,
+                # pending manual reviews, unresolved errors, or active execution identities.
+                cur = conn.execute(
+                    """
+                    DELETE FROM events
+                    WHERE timestamp < ?
+                      AND (task_id IS NULL OR task_id NOT IN (
+                          SELECT id FROM tasks WHERE status IN ('PENDING', 'QUEUED', 'READY', 'RUNNING', 'SENDING', 'RETRY_WAIT', 'RECONCILING')
+                          UNION
+                          SELECT task_id FROM reconciliations WHERE state NOT IN ('RESOLVED', 'FAILED')
+                          UNION
+                          SELECT task_id FROM manual_reviews WHERE status = 'PENDING'
+                          UNION
+                          SELECT task_id FROM errors WHERE resolved_at IS NULL
+                          UNION
+                          SELECT task_id FROM execution_identities WHERE state IN ('CLAIMED', 'SENDING', 'RUNNING')
+                      ))
+                      AND (entity_id IS NULL OR entity_id NOT IN (
+                          SELECT id FROM tasks WHERE status IN ('PENDING', 'QUEUED', 'READY', 'RUNNING', 'SENDING', 'RETRY_WAIT', 'RECONCILING')
+                          UNION
+                          SELECT id FROM reconciliations WHERE state NOT IN ('RESOLVED', 'FAILED')
+                          UNION
+                          SELECT id FROM manual_reviews WHERE status = 'PENDING'
+                          UNION
+                          SELECT id FROM errors WHERE resolved_at IS NULL
+                      ));
+                    """,
+                    (ev_cutoff,),
+                )
                 summary["events_deleted"] = cur.rowcount
 
                 # 2. Prune old errors (ONLY resolved errors, never unresolved ones needed for recovery)

@@ -45,11 +45,13 @@ class TaskDispatcher:
         manual_review_repo: Optional[Any] = None,
         reconciliation_repo: Optional[Any] = None,
         cooldown_repo: Optional[Any] = None,
+        auth_validator: Optional[Any] = None,
     ):
         self.task_repo = task_repo
         self.worker_manager = worker_manager
         self.throttling_service = throttling_service
         self.control_service = control_service
+        self.auth_validator = auth_validator
 
         db = getattr(task_repo, "db", None)
         if account_repo is not None:
@@ -195,7 +197,15 @@ class TaskDispatcher:
                 if account_id and s_account_id and account_id != s_account_id:
                     return False, f"Session account mismatch: session={s_account_id}, task={account_id}"
 
-                # Authentication check
+                # Authoritative fresh authentication check
+                if self.auth_validator and hasattr(session, "is_alive") and session.is_alive():
+                    try:
+                        fresh_state, _ = self.auth_validator.check_auth_state(session)
+                        if hasattr(session, "auth_status") and hasattr(fresh_state, "value"):
+                            session.auth_status = fresh_state.value
+                    except Exception as e:
+                        logger.warning(f"TaskDispatcher fresh auth check failed: {e}")
+
                 auth_status = getattr(session, "auth_status", None)
                 if auth_status in ("LOGIN_REQUIRED", "SESSION_EXPIRED", "CHALLENGE", "CHECKPOINT", "UNKNOWN"):
                     return False, f"Worker session has invalid auth status: {auth_status}"

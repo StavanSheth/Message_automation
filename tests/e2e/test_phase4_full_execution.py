@@ -25,8 +25,8 @@ from backend.automation.task_executor import TaskExecutor
 from backend.workers.default_manager import DefaultWorkerManager
 from backend.scheduler.scheduler import Scheduler
 from backend.domain.models import Task, Contact, Message, Account
-from backend.domain.enums import TaskState, TaskType, MessageState, WorkerMode, SystemState, AccountStatus
-from tests.fixtures.mock_browser import create_mock_session
+from backend.domain.enums import TaskState, TaskType, MessageState, WorkerMode, SystemState, AccountStatus, WorkerStatus
+from tests.fixtures.realistic_browser_harness import create_realistic_session, RealisticBrowserDriverHarness
 
 
 @pytest.fixture
@@ -122,7 +122,7 @@ def full_e2e_env(tmp_path):
         throttling_service=throttling_svc,
     )
 
-    session = create_mock_session("SESS-E2E-P4")
+    session = create_realistic_session("SESS-E2E-P4")
     session.start()
 
     return {
@@ -145,7 +145,6 @@ def test_full_production_execution_chain(full_e2e_env):
     task_repo = full_e2e_env["task_repo"]
     msg_repo = full_e2e_env["msg_repo"]
     account_repo = full_e2e_env["account_repo"]
-    insta_service = full_e2e_env["insta_service"]
     session = full_e2e_env["session"]
 
     # Start system via control service
@@ -153,7 +152,7 @@ def test_full_production_execution_chain(full_e2e_env):
     assert res["status"] == "ok"
     assert control.state == SystemState.RUNNING
 
-    # Get worker started by control service and attach mock session with strict ownership
+    # Get worker started by control service and attach realistic session with strict ownership
     workers = worker_mgr.list_workers()
     worker = worker_mgr.get_worker(workers[0].id)
     worker.session = session
@@ -170,26 +169,8 @@ def test_full_production_execution_chain(full_e2e_env):
     task_repo.create(task)
     msg_repo.create(Message(id="m-p4-e2e", task_id="t-p4-e2e", contact_id="c-e2e-p4", body="Hello E2E!"))
 
-    # Real InstagramAutomationService pipeline execution with deterministic browser driver:
-    # AuthValidator -> Navigator -> ProfileReader -> ProfileVerifier -> Composer -> Sender -> SendVerifier
-    session.driver.evaluate = MagicMock(side_effect=[
-        {"state": "AUTHENTICATED", "reason": "navigation_elements_present"},  # auth validator
-        {"status": "AVAILABLE"},  # navigator
-        {                         # profile reader
-            "url": "https://instagram.com/e2e_p4",
-            "username": "e2e_p4",
-            "display_name": "E2E Contact",
-            "follower_count_text": "1,000",
-            "can_message": True,
-        },
-        {"success": True},        # open message dialog
-        True,                     # composer ready check
-        {"success": True},        # compose message
-        {"submitted": True},      # submit send
-        {"found": True, "snippet": "Hello E2E!", "failure_indicator": False},  # send verifier
-    ])
-
     # Scheduler tick -> dispatches task to worker -> executes via ExecutionService -> InstagramAutomationService -> completes
+    # Real DOM evaluation occurs through RealisticBrowserDriverHarness (NO MagicMock on evaluate)
     ready_tasks = scheduler.tick()
     assert len(ready_tasks) == 1
 
@@ -197,6 +178,45 @@ def test_full_production_execution_chain(full_e2e_env):
     t = task_repo.get_by_id("t-p4-e2e")
     assert t.status == TaskState.COMPLETED
 
-    # Verify message sent
+    # Verify message sent and recorded in driver's thread
     m = msg_repo.get_by_id("m-p4-e2e")
     assert m.status == MessageState.SENT
+    assert "Hello E2E!" in session.driver._sent_messages
+
+
+def test_full_production_execution_challenge_detection(full_e2e_env):
+    """Real E2E test verifying challenge page detection immediately routes to MANUAL_REVIEW and quarantines worker."""
+    control = full_e2e_env["control"]
+    control.start()
+
+    scheduler = full_e2e_env["scheduler"]
+    worker_mgr = full_e2e_env["worker_mgr"]
+    task_repo = full_e2e_env["task_repo"]
+    msg_repo = full_e2e_env["msg_repo"]
+    account_repo = full_e2e_env["account_repo"]
+
+    # Create worker with challenge session
+    challenge_session = create_realistic_session("SESS-E2E-CHALLENGE")
+    challenge_session.driver._page_type = "CHALLENGE"
+
+    workers = worker_mgr.list_workers()
+    worker = worker_mgr.get_worker(workers[0].id)
+    worker.session = challenge_session
+    worker.account_id = "acc-e2e"
+    challenge_session.account_id = "acc-e2e"
+    challenge_session.worker_id = worker.worker_id
+
+    account_repo.assign_worker("acc-e2e", worker.worker_id, challenge_session.session_id)
+
+    task = Task(id="t-p4-chall", contact_id="c-e2e-p4", type=TaskType.MESSAGE, status=TaskState.READY, account_id="acc-e2e")
+    task_repo.create(task)
+    msg_repo.create(Message(id="m-p4-chall", task_id="t-p4-chall", contact_id="c-e2e-p4", body="Challenge check"))
+
+    # Scheduler tick -> dispatches task -> ExecutionService catches challenge -> quarantines worker & routes to MANUAL_REVIEW
+    scheduler.tick()
+
+    t = task_repo.get_by_id("t-p4-chall")
+    assert t.status == TaskState.MANUAL_REVIEW
+    assert worker.status == WorkerStatus.QUARANTINED
+    assert "challenge" in str(worker.quarantine_reason).lower()
+

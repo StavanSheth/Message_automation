@@ -63,11 +63,15 @@ def test_retention_cleans_only_safe_terminal_records(retention_env):
     old_time = (now - timedelta(days=40)).isoformat()
     recent_time = (now - timedelta(days=2)).isoformat()
 
-    # 1. Events: one old, one recent
-    event_repo.record(EventCode.TASK_CLAIMED, category="task", level=EventLevel.INFO, payload={"test": "old"})
+    # 1. Events:
+    # - old terminal event (no active task) -> pruned
+    # - old event attached to ACTIVE task t-ret-active -> PRESERVED
+    # - recent event -> PRESERVED
+    ev_old_terminal = event_repo.record(EventCode.TASK_COMPLETED, category="task", level=EventLevel.INFO, payload={"test": "old_terminal"})
+    ev_old_active = event_repo.record(EventCode.TASK_CLAIMED, category="task", task_id="t-ret-active", level=EventLevel.INFO, payload={"test": "old_active"})
     with db.transaction() as conn:
-        conn.execute("UPDATE events SET timestamp = ?;", (old_time,))
-    event_repo.record(EventCode.TASK_CLAIMED, category="task", level=EventLevel.INFO, payload={"test": "recent"})
+        conn.execute("UPDATE events SET timestamp = ? WHERE id IN (?, ?);", (old_time, ev_old_terminal.id, ev_old_active.id))
+    ev_recent = event_repo.record(EventCode.TASK_CLAIMED, category="task", level=EventLevel.INFO, payload={"test": "recent"})
 
     # 2. Errors: one old resolved, one old UNRESOLVED
     error_repo.record(
@@ -149,6 +153,11 @@ def test_retention_cleans_only_safe_terminal_records(retention_env):
     assert summary["errors_deleted"] == 1
     assert summary["resolved_reconciliations_deleted"] == 1
     assert summary["resolved_manual_reviews_deleted"] == 1
+
+    # Verify that event linked to active task is PRESERVED despite age
+    assert event_repo.get_by_id(ev_old_active.id) is not None
+    # Verify that old terminal event was pruned
+    assert event_repo.get_by_id(ev_old_terminal.id) is None
 
     # Verify that unresolved errors are PRESERVED
     assert error_repo.get_by_id("err-old-unresolved") is not None

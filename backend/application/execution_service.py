@@ -42,12 +42,14 @@ class ExecutionService:
         throttling_service: Optional[Any] = None,
         worker_repo: Optional[Any] = None,
         account_repo: Optional[Any] = None,
+        auth_validator: Optional[Any] = None,
     ):
         self.task_repo = task_repo
         self.message_repo = message_repo
         self.automation_service = automation_service
         self.manual_review_repo = manual_review_repo
         self.event_repo = event_repo
+        self.auth_validator = auth_validator or getattr(automation_service, "auth_validator", None)
         self._active_execution_keys: Set[str] = set()
 
         db = getattr(task_repo, "db", None)
@@ -151,15 +153,16 @@ class ExecutionService:
 
         # ── 3. Account and Session Ownership Check ───────────────
         task_account_id = getattr(task, "account_id", None)
-        if task_account_id and hasattr(task_account_id, "_mock_return_value"):
-            task_account_id = None
+        task_account_id = task_account_id if isinstance(task_account_id, str) else None
+
         session_account_id = getattr(session, "account_id", None)
-        if session_account_id and hasattr(session_account_id, "_mock_return_value"):
-            session_account_id = None
+        session_account_id = session_account_id if isinstance(session_account_id, str) else None
+
         session_worker_id = getattr(session, "worker_id", None)
-        if session_worker_id and hasattr(session_worker_id, "_mock_return_value"):
-            session_worker_id = None
+        session_worker_id = session_worker_id if isinstance(session_worker_id, str) else None
+
         session_profile = getattr(session, "profile_path", None)
+        session_profile = session_profile if isinstance(session_profile, str) else None
 
         worker_rec = None
         if self.worker_repo:
@@ -168,8 +171,7 @@ class ExecutionService:
             except Exception:
                 worker_rec = None
         worker_account_id = getattr(worker_rec, "account_id", None) if worker_rec else None
-        if worker_account_id and hasattr(worker_account_id, "_mock_return_value"):
-            worker_account_id = None
+        worker_account_id = worker_account_id if isinstance(worker_account_id, str) else None
 
         def _handle_ownership_mismatch(reason_msg: str) -> bool:
             logger.error(f"Execution rejected: {reason_msg}")
@@ -232,7 +234,16 @@ class ExecutionService:
             except Exception as e:
                 logger.debug(f"Worker session lookup skipped: {e}")
 
-        # ── 4. Authentication Lifecycle Check ────────────────────
+        # ── 4. Authoritative Fresh Authentication Lifecycle Check ────
+        validator = self.auth_validator or getattr(self.automation_service, "auth_validator", None)
+        if validator and session and hasattr(session, "is_alive") and session.is_alive():
+            try:
+                fresh_state, auth_reason = validator.check_auth_state(session)
+                if hasattr(fresh_state, "value"):
+                    setattr(session, "auth_status", fresh_state.value)
+            except Exception as e:
+                logger.warning(f"Authoritative auth validation failed: {e}")
+
         auth_status = getattr(session, "auth_status", None)
         if auth_status:
             if auth_status in ("LOGIN_REQUIRED", "SESSION_EXPIRED"):

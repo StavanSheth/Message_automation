@@ -30,6 +30,9 @@ class BrowserSessionInstance:
     Encapsulates a managed, state-tracked browser session.
     Protects sensitive credentials and cookies from logging.
     """
+    auth_status: Optional[str] = None
+    account_id: Optional[str] = None
+    worker_id: Optional[str] = None
 
     def __init__(
         self,
