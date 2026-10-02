@@ -91,6 +91,12 @@ class DefaultWorkerManager(WorkerManager):
 
         worker_id = worker_id or generate_id("WKR")
         worker_code = f"worker-{len(self._workers) + 1}"
+        if self.worker_repo:
+            try:
+                if self.worker_repo.get_by_code(worker_code):
+                    worker_code = f"worker-{worker_id}"
+            except Exception:
+                pass
 
         session = None
         if self.browser_manager:

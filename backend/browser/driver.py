@@ -91,9 +91,15 @@ class BrowserDriver(ABC):
         pass
 
 
+import queue
+import threading
+
+
 class PlaywrightBrowserDriver(BrowserDriver):
     """
     Concrete browser driver wrapping Playwright sync API.
+    Executes all Playwright operations on a dedicated driver thread to avoid
+    cross-thread greenlet switching issues when called across scheduler and worker threads.
     Guarantees no raw Playwright objects leak into higher application layers.
     """
 
@@ -104,78 +110,134 @@ class PlaywrightBrowserDriver(BrowserDriver):
         self._context = None
         self._page = None
         self._is_persistent = False
+        self._worker_thread: Optional[threading.Thread] = None
+        self._thread_id: Optional[int] = None
+        self._queue: queue.Queue = queue.Queue()
+        self._stop_event = threading.Event()
+
+    def _worker_loop(self, ready_event: threading.Event) -> None:
+        self._thread_id = threading.get_ident()
+        ready_event.set()
+        while not self._stop_event.is_set():
+            try:
+                item = self._queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            if item is None:
+                break
+            fn, args, kwargs, result_holder, done_event = item
+            try:
+                result_holder["val"] = fn(*args, **kwargs)
+            except Exception as e:
+                result_holder["err"] = e
+            finally:
+                done_event.set()
+
+    def _dispatch(self, fn, *args, **kwargs) -> Any:
+        if not self._worker_thread or not self._worker_thread.is_alive():
+            raise BrowserCrashError("Browser worker thread is not running")
+        if threading.get_ident() == self._thread_id:
+            return fn(*args, **kwargs)
+        result_holder: Dict[str, Any] = {}
+        done_event = threading.Event()
+        self._queue.put((fn, args, kwargs, result_holder, done_event))
+        done_event.wait()
+        if "err" in result_holder:
+            raise result_holder["err"]
+        return result_holder.get("val")
 
     def launch(self, config: Optional[BrowserLaunchConfig] = None) -> None:
         if config:
             self.config = config
-
+        self._stop_event.clear()
+        ready_event = threading.Event()
+        self._worker_thread = threading.Thread(
+            target=self._worker_loop,
+            args=(ready_event,),
+            name="PlaywrightBrowserThread",
+            daemon=True,
+        )
+        self._worker_thread.start()
+        ready_event.wait()
         try:
-            from playwright.sync_api import sync_playwright
-            self._playwright = sync_playwright().start()
-
-            b_type = self.config.browser_type.value.lower()
-            if b_type in ("chromium", "chrome", "edge"):
-                launcher = self._playwright.chromium
-            elif b_type == "firefox":
-                launcher = self._playwright.firefox
-            elif b_type == "webkit":
-                launcher = self._playwright.webkit
-            else:
-                launcher = self._playwright.chromium
-
-            channel = None
-            if b_type == "chrome":
-                channel = "chrome"
-            elif b_type == "edge":
-                channel = "msedge"
-
-            launch_args = list(self.config.extra_args)
-            timeout_ms = self.config.timeout_seconds * 1000
-
-            if self.config.profile_directory:
-                self._is_persistent = True
-                self._context = launcher.launch_persistent_context(
-                    user_data_dir=self.config.profile_directory,
-                    headless=self.config.headless,
-                    channel=channel,
-                    args=launch_args,
-                    timeout=timeout_ms,
-                    viewport={"width": self.config.viewport_width, "height": self.config.viewport_height},
-                    user_agent=self.config.user_agent,
-                )
-                pages = self._context.pages
-                self._page = pages[0] if pages else self._context.new_page()
-            else:
-                self._is_persistent = False
-                self._browser = launcher.launch(
-                    headless=self.config.headless,
-                    channel=channel,
-                    args=launch_args,
-                    timeout=timeout_ms,
-                )
-                self._context = self._browser.new_context(
-                    viewport={"width": self.config.viewport_width, "height": self.config.viewport_height},
-                    user_agent=self.config.user_agent,
-                )
-                self._page = self._context.new_page()
-
-            logger.info("Playwright browser launched successfully", browser_type=b_type)
-
+            self._dispatch(self._raw_launch)
         except Exception as e:
             self.close()
             raise BrowserLaunchError(f"Failed to launch browser: {e}") from e
 
+    def _raw_launch(self) -> None:
+        from playwright.sync_api import sync_playwright
+        self._playwright = sync_playwright().start()
+
+        b_type = self.config.browser_type.value.lower()
+        if b_type in ("chromium", "chrome", "edge"):
+            launcher = self._playwright.chromium
+        elif b_type == "firefox":
+            launcher = self._playwright.firefox
+        elif b_type == "webkit":
+            launcher = self._playwright.webkit
+        else:
+            launcher = self._playwright.chromium
+
+        channel = None
+        if b_type == "chrome":
+            channel = "chrome"
+        elif b_type == "edge":
+            channel = "msedge"
+
+        launch_args = list(self.config.extra_args)
+        timeout_ms = self.config.timeout_seconds * 1000
+
+        if self.config.profile_directory:
+            self._is_persistent = True
+            self._context = launcher.launch_persistent_context(
+                user_data_dir=self.config.profile_directory,
+                headless=self.config.headless,
+                channel=channel,
+                args=launch_args,
+                timeout=timeout_ms,
+                viewport={"width": self.config.viewport_width, "height": self.config.viewport_height},
+                user_agent=self.config.user_agent,
+            )
+            pages = self._context.pages
+            self._page = pages[0] if pages else self._context.new_page()
+        else:
+            self._is_persistent = False
+            self._browser = launcher.launch(
+                headless=self.config.headless,
+                channel=channel,
+                args=launch_args,
+                timeout=timeout_ms,
+            )
+            self._context = self._browser.new_context(
+                viewport={"width": self.config.viewport_width, "height": self.config.viewport_height},
+                user_agent=self.config.user_agent,
+            )
+            self._page = self._context.new_page()
+
+        logger.info("Playwright browser launched successfully", browser_type=b_type)
+
     def is_connected(self) -> bool:
+        if not self._worker_thread or not self._worker_thread.is_alive():
+            return False
+        try:
+            return self._dispatch(self._raw_is_connected)
+        except Exception:
+            return False
+
+    def _raw_is_connected(self) -> bool:
         if self._is_persistent:
             return self._context is not None and len(self._context.pages) > 0
         return self._browser is not None and self._browser.is_connected()
 
     def new_context(self, profile_path: Optional[str] = None) -> None:
-        if not self.is_connected() and not self._is_persistent:
+        self._dispatch(self._raw_new_context, profile_path)
+
+    def _raw_new_context(self, profile_path: Optional[str] = None) -> None:
+        if not self._raw_is_connected() and not self._is_persistent:
             raise BrowserCrashError("Browser is not running")
 
         if self._is_persistent:
-            # Persistent context is already single-session
             if not self._page or self._page.is_closed():
                 self._page = self._context.new_page()
             return
@@ -192,6 +254,10 @@ class PlaywrightBrowserDriver(BrowserDriver):
         self._page = self._context.new_page()
 
     def close_context(self) -> None:
+        if self._worker_thread and self._worker_thread.is_alive():
+            self._dispatch(self._raw_close_context)
+
+    def _raw_close_context(self) -> None:
         if self._context:
             try:
                 self._context.close()
@@ -202,11 +268,18 @@ class PlaywrightBrowserDriver(BrowserDriver):
                 self._page = None
 
     def new_page(self) -> None:
+        self._dispatch(self._raw_new_page)
+
+    def _raw_new_page(self) -> None:
         if not self._context:
-            self.new_context()
+            self._raw_new_context()
         self._page = self._context.new_page()
 
     def close_page(self) -> None:
+        if self._worker_thread and self._worker_thread.is_alive():
+            self._dispatch(self._raw_close_page)
+
+    def _raw_close_page(self) -> None:
         if self._page:
             try:
                 self._page.close()
@@ -216,8 +289,11 @@ class PlaywrightBrowserDriver(BrowserDriver):
                 self._page = None
 
     def navigate(self, url: str, timeout_ms: Optional[int] = None) -> str:
+        return self._dispatch(self._raw_navigate, url, timeout_ms)
+
+    def _raw_navigate(self, url: str, timeout_ms: Optional[int] = None) -> str:
         if not self._page or self._page.is_closed():
-            self.new_page()
+            self._raw_new_page()
 
         t_ms = timeout_ms if timeout_ms is not None else (self.config.timeout_seconds * 1000)
         try:
@@ -232,11 +308,22 @@ class PlaywrightBrowserDriver(BrowserDriver):
             raise BrowserCrashError(f"Browser failed during navigation to {url}: {e}") from e
 
     def current_url(self) -> str:
+        if not self._worker_thread or not self._worker_thread.is_alive():
+            return ""
+        try:
+            return self._dispatch(self._raw_current_url)
+        except Exception:
+            return ""
+
+    def _raw_current_url(self) -> str:
         if not self._page or self._page.is_closed():
             return ""
         return self._page.url
 
     def wait_for_load(self, state: str = "load", timeout_ms: Optional[int] = None) -> None:
+        self._dispatch(self._raw_wait_for_load, state, timeout_ms)
+
+    def _raw_wait_for_load(self, state: str = "load", timeout_ms: Optional[int] = None) -> None:
         if not self._page or self._page.is_closed():
             raise BrowserCrashError("Page is not available to wait for load")
 
@@ -249,6 +336,9 @@ class PlaywrightBrowserDriver(BrowserDriver):
             raise BrowserCrashError(f"Error waiting for load state '{state}': {e}") from e
 
     def evaluate(self, expression: str, arg: Any = None) -> Any:
+        return self._dispatch(self._raw_evaluate, expression, arg)
+
+    def _raw_evaluate(self, expression: str, arg: Any = None) -> Any:
         if not self._page or self._page.is_closed():
             raise BrowserCrashError("Page is not available for evaluate")
 
@@ -260,6 +350,9 @@ class PlaywrightBrowserDriver(BrowserDriver):
             raise BrowserCrashError(f"JavaScript evaluation failed: {e}") from e
 
     def screenshot(self, path: str) -> None:
+        self._dispatch(self._raw_screenshot, path)
+
+    def _raw_screenshot(self, path: str) -> None:
         if not self._page or self._page.is_closed():
             raise BrowserCrashError("Page is not available for screenshot")
         try:
@@ -268,12 +361,34 @@ class PlaywrightBrowserDriver(BrowserDriver):
             logger.warning(f"Failed to capture screenshot: {e}")
 
     def get_content(self) -> str:
+        if not self._worker_thread or not self._worker_thread.is_alive():
+            return ""
+        try:
+            return self._dispatch(self._raw_get_content)
+        except Exception:
+            return ""
+
+    def _raw_get_content(self) -> str:
         if not self._page or self._page.is_closed():
             return ""
         return self._page.content()
 
     def close(self) -> None:
         """Idempotent clean teardown of page, context, browser, and playwright."""
+        if self._worker_thread and self._worker_thread.is_alive():
+            try:
+                self._dispatch(self._raw_close)
+            except Exception:
+                pass
+            self._stop_event.set()
+            self._queue.put(None)
+            self._worker_thread.join(timeout=3.0)
+            self._worker_thread = None
+            self._thread_id = None
+        else:
+            self._raw_close()
+
+    def _raw_close(self) -> None:
         if self._page:
             try:
                 self._page.close()

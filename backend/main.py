@@ -1,6 +1,9 @@
 """Authoritative production entry point for Message Automation."""
 
 import sys
+import time
+import signal
+import threading
 import argparse
 from pathlib import Path
 
@@ -17,6 +20,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Instagram Message Automation Production Service")
     parser.add_argument("--db", type=str, default=None, help="Database path")
     parser.add_argument("--check-graph", action="store_true", help="Validate dependency graph and exit")
+    parser.add_argument("--once", action="store_true", help="Start and exit immediately without keeping server active")
     args = parser.parse_args()
 
     app = build_production_app(db_path=args.db)
@@ -34,6 +38,31 @@ def main() -> None:
     res = app.start()
     print(f"Application start result: {res}")
 
+    if not args.once:
+        print("Production server running. Press Ctrl+C to terminate.")
+        stop_event = threading.Event()
+
+        def handle_signal(sig, frame):
+            logger.info(f"Signal {sig} received, stopping server...")
+            stop_event.set()
+
+        signal.signal(signal.SIGINT, handle_signal)
+        try:
+            signal.signal(signal.SIGTERM, handle_signal)
+        except Exception:
+            pass
+
+        try:
+            while not stop_event.is_set():
+                stop_event.wait(timeout=1.0)
+        except (KeyboardInterrupt, SystemExit):
+            pass
+        finally:
+            print("Shutting down production server...")
+            app.stop()
+            print("Production server stopped.")
+
 
 if __name__ == "__main__":
     main()
+
