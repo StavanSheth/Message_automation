@@ -21,6 +21,9 @@ def main() -> None:
     parser.add_argument("--db", type=str, default=None, help="Database path")
     parser.add_argument("--check-graph", action="store_true", help="Validate dependency graph and exit")
     parser.add_argument("--once", action="store_true", help="Start and exit immediately without keeping server active")
+    parser.add_argument("--host", type=str, default="127.0.0.1", help="Web dashboard server host")
+    parser.add_argument("--port", type=int, default=8080, help="Web dashboard server port")
+    parser.add_argument("--no-web", action="store_true", help="Disable web dashboard server")
     args = parser.parse_args()
 
     app = build_production_app(db_path=args.db)
@@ -39,6 +42,18 @@ def main() -> None:
     print(f"Application start result: {res}")
 
     if not args.once:
+        web_server = None
+        if not args.no_web:
+            try:
+                from backend.web.server import DashboardServer
+                web_server = DashboardServer(app=app, host=args.host, port=args.port)
+                dashboard_url = web_server.start(background=True)
+                print(f"\n=======================================================")
+                print(f"  Live Operational Dashboard: {dashboard_url}")
+                print(f"=======================================================\n")
+            except Exception as e:
+                logger.warning(f"Could not start dashboard server: {e}")
+
         print("Production server running. Press Ctrl+C to terminate.")
         stop_event = threading.Event()
 
@@ -59,6 +74,8 @@ def main() -> None:
             pass
         finally:
             print("Shutting down production server...")
+            if web_server:
+                web_server.stop()
             app.stop()
             print("Production server stopped.")
 

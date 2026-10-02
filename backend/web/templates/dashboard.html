@@ -1,0 +1,766 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Instagram Automation — Operational Control Hub</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-base: #080c14;
+      --bg-surface: #0f172a;
+      --bg-card: rgba(15, 23, 42, 0.75);
+      --bg-card-hover: rgba(30, 41, 59, 0.7);
+      --border-subtle: rgba(255, 255, 255, 0.08);
+      --border-highlight: rgba(99, 102, 241, 0.3);
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+      --text-dim: #64748b;
+      --primary: #6366f1;
+      --primary-glow: rgba(99, 102, 241, 0.25);
+      --emerald: #10b981;
+      --emerald-glow: rgba(16, 185, 129, 0.25);
+      --amber: #f59e0b;
+      --rose: #ef4444;
+      --cyan: #06b6d4;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      background-color: var(--bg-base);
+      color: var(--text-main);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      background-image: 
+        radial-gradient(circle at 15% 15%, rgba(99, 102, 241, 0.08) 0%, transparent 40%),
+        radial-gradient(circle at 85% 75%, rgba(6, 182, 212, 0.06) 0%, transparent 45%);
+      background-attachment: fixed;
+    }
+
+    /* Header */
+    header {
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      background: rgba(8, 12, 20, 0.85);
+      border-bottom: 1px solid var(--border-subtle);
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      padding: 1rem 2rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 0.875rem;
+    }
+
+    .brand-icon {
+      width: 40px;
+      height: 40px;
+      background: linear-gradient(135deg, #6366f1, #a855f7, #ec4899);
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 4px 15px var(--primary-glow);
+    }
+
+    .brand-icon svg {
+      width: 22px;
+      height: 22px;
+      fill: white;
+    }
+
+    .brand-title h1 {
+      font-size: 1.15rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      background: linear-gradient(135deg, #fff 40%, #cbd5e1);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .brand-title p {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+    }
+
+    .state-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.35rem 0.85rem;
+      border-radius: 9999px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      background: rgba(16, 185, 129, 0.12);
+      border: 1px solid rgba(16, 185, 129, 0.3);
+      color: var(--emerald);
+      box-shadow: 0 0 12px var(--emerald-glow);
+    }
+
+    .state-pill.RUNNING {
+      background: rgba(16, 185, 129, 0.12);
+      border-color: rgba(16, 185, 129, 0.3);
+      color: var(--emerald);
+    }
+
+    .state-pill.PAUSED {
+      background: rgba(245, 158, 11, 0.12);
+      border-color: rgba(245, 158, 11, 0.3);
+      color: var(--amber);
+    }
+
+    .state-pill.DRAINING {
+      background: rgba(99, 102, 241, 0.12);
+      border-color: rgba(99, 102, 241, 0.3);
+      color: var(--primary);
+    }
+
+    .state-pill.DEGRADED, .state-pill.STOPPED {
+      background: rgba(239, 68, 68, 0.12);
+      border-color: rgba(239, 68, 68, 0.3);
+      color: var(--rose);
+    }
+
+    .pulse-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background-color: currentColor;
+      box-shadow: 0 0 8px currentColor;
+      animation: pulse 2s infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.4; transform: scale(0.85); }
+    }
+
+    /* Main Container */
+    main {
+      flex: 1;
+      padding: 2rem;
+      max-width: 1440px;
+      margin: 0 auto;
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      gap: 2rem;
+    }
+
+    /* Controls Bar */
+    .controls-panel {
+      background: var(--bg-card);
+      backdrop-filter: blur(12px);
+      border: 1px solid var(--border-subtle);
+      border-radius: 14px;
+      padding: 1.25rem 1.75rem;
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: center;
+      gap: 1.25rem;
+    }
+
+    .controls-group {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+    }
+
+    .btn {
+      appearance: none;
+      border: none;
+      outline: none;
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 0.85rem;
+      font-weight: 500;
+      padding: 0.55rem 1.15rem;
+      border-radius: 8px;
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
+    }
+
+    .btn:hover {
+      transform: translateY(-1px);
+      filter: brightness(1.1);
+    }
+
+    .btn:active {
+      transform: translateY(0);
+    }
+
+    .btn-primary {
+      background: linear-gradient(135deg, #6366f1, #4f46e5);
+      color: white;
+    }
+
+    .btn-success {
+      background: linear-gradient(135deg, #10b981, #059669);
+      color: white;
+    }
+
+    .btn-warning {
+      background: linear-gradient(135deg, #f59e0b, #d97706);
+      color: white;
+    }
+
+    .btn-neutral {
+      background: rgba(255, 255, 255, 0.06);
+      color: var(--text-main);
+      border: 1px solid var(--border-subtle);
+    }
+
+    .btn-neutral:hover {
+      background: rgba(255, 255, 255, 0.1);
+    }
+
+    .refresh-badge {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    /* KPI Grid */
+    .kpi-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 1.25rem;
+    }
+
+    .kpi-card {
+      background: var(--bg-card);
+      backdrop-filter: blur(12px);
+      border: 1px solid var(--border-subtle);
+      border-radius: 12px;
+      padding: 1.25rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+      transition: border-color 0.2s ease, transform 0.2s ease;
+    }
+
+    .kpi-card:hover {
+      border-color: var(--border-highlight);
+      transform: translateY(-2px);
+    }
+
+    .kpi-title {
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+      font-weight: 600;
+    }
+
+    .kpi-value {
+      font-size: 1.85rem;
+      font-weight: 700;
+      letter-spacing: -0.03em;
+      color: var(--text-main);
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    .kpi-sub {
+      font-size: 0.75rem;
+      color: var(--text-dim);
+      display: flex;
+      align-items: center;
+      gap: 0.35rem;
+    }
+
+    /* Sections */
+    .dashboard-grid {
+      display: grid;
+      grid-template-columns: 2fr 1fr;
+      gap: 1.5rem;
+    }
+
+    @media (max-width: 1024px) {
+      .dashboard-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .panel {
+      background: var(--bg-card);
+      backdrop-filter: blur(12px);
+      border: 1px solid var(--border-subtle);
+      border-radius: 14px;
+      padding: 1.5rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+    }
+
+    .panel-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid var(--border-subtle);
+      padding-bottom: 0.75rem;
+    }
+
+    .panel-header h2 {
+      font-size: 1rem;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+    }
+
+    .panel-badge {
+      font-size: 0.75rem;
+      font-family: 'JetBrains Mono', monospace;
+      color: var(--text-muted);
+      background: rgba(255, 255, 255, 0.04);
+      padding: 0.2rem 0.5rem;
+      border-radius: 6px;
+    }
+
+    /* Table Styles */
+    .table-container {
+      overflow-x: auto;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      text-align: left;
+      font-size: 0.85rem;
+    }
+
+    th {
+      color: var(--text-muted);
+      font-weight: 500;
+      padding: 0.65rem 0.75rem;
+      border-bottom: 1px solid var(--border-subtle);
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    td {
+      padding: 0.75rem;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+      color: var(--text-main);
+    }
+
+    tr:hover td {
+      background: rgba(255, 255, 255, 0.02);
+    }
+
+    .mono-cell {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.8rem;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 0.2rem 0.55rem;
+      border-radius: 6px;
+      font-size: 0.7rem;
+      font-weight: 600;
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+    }
+
+    .badge-ready { background: rgba(59, 130, 246, 0.15); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.3); }
+    .badge-completed { background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.3); }
+    .badge-running { background: rgba(245, 158, 11, 0.15); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.3); }
+    .badge-failed { background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.3); }
+    .badge-reconciling { background: rgba(168, 85, 247, 0.15); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.3); }
+
+    /* Event stream */
+    .events-list {
+      display: flex;
+      flex-direction: column;
+      gap: 0.65rem;
+      max-height: 480px;
+      overflow-y: auto;
+      padding-right: 0.25rem;
+    }
+
+    .event-item {
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+      padding: 0.65rem 0.85rem;
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.02);
+      border-left: 3px solid var(--primary);
+      transition: background 0.15s ease;
+    }
+
+    .event-item:hover {
+      background: rgba(255, 255, 255, 0.04);
+    }
+
+    .event-header {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.75rem;
+    }
+
+    .event-code {
+      font-family: 'JetBrains Mono', monospace;
+      font-weight: 600;
+      color: #cbd5e1;
+    }
+
+    .event-time {
+      color: var(--text-dim);
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    .event-detail {
+      font-size: 0.8rem;
+      color: var(--text-muted);
+    }
+
+    /* Toast */
+    #toast {
+      position: fixed;
+      bottom: 2rem;
+      right: 2rem;
+      padding: 0.85rem 1.25rem;
+      border-radius: 10px;
+      background: rgba(15, 23, 42, 0.95);
+      border: 1px solid var(--border-highlight);
+      color: var(--text-main);
+      box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5);
+      font-size: 0.85rem;
+      z-index: 100;
+      transform: translateY(100px);
+      opacity: 0;
+      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    #toast.show {
+      transform: translateY(0);
+      opacity: 1;
+    }
+  </style>
+</head>
+<body>
+  <!-- Header -->
+  <header>
+    <div class="brand">
+      <div class="brand-icon">
+        <svg viewBox="0 0 24 24">
+          <path d="M12 2.163c3.204 0 3.584.012 4.85.07 3.252.148 4.771 1.691 4.919 4.919.058 1.265.069 1.645.069 4.849 0 3.205-.012 3.584-.069 4.849-.149 3.225-1.664 4.771-4.919 4.919-1.266.058-1.644.07-4.85.07-3.204 0-3.584-.012-4.849-.07-3.26-.149-4.771-1.699-4.919-4.92-.058-1.265-.07-1.644-.07-4.849 0-3.204.013-3.583.07-4.849.149-3.227 1.664-4.771 4.919-4.919 1.266-.057 1.645-.069 4.849-.069zm0-2.163c-3.259 0-3.667.014-4.947.072-4.358.2-6.78 2.618-6.98 6.98-.059 1.281-.073 1.689-.073 4.948 0 3.259.014 3.668.072 4.948.2 4.358 2.618 6.78 6.98 6.98 1.281.058 1.689.072 4.948.072 3.259 0 3.668-.014 4.948-.072 4.354-.2 6.782-2.618 6.979-6.98.059-1.28.073-1.689.073-4.948 0-3.259-.014-3.667-.072-4.947-.196-4.354-2.617-6.78-6.979-6.98-1.281-.059-1.69-.073-4.949-.073zm0 5.838c-3.403 0-6.162 2.759-6.162 6.162s2.759 6.163 6.162 6.163 6.162-2.759 6.162-6.163c0-3.403-2.759-6.162-6.162-6.162zm0 10.162c-2.209 0-4-1.79-4-4 0-2.209 1.791-4 4-4s4 1.791 4 4c0 2.21-1.791 4-4 4zm6.406-11.845c-.796 0-1.441.645-1.441 1.44s.645 1.44 1.441 1.44c.795 0 1.439-.645 1.439-1.44s-.644-1.44-1.439-1.44z"/>
+        </svg>
+      </div>
+      <div class="brand-title">
+        <h1>Instagram Automation Hub</h1>
+        <p>Production Hardened &bull; Invariant Guarded</p>
+      </div>
+    </div>
+    <div class="header-actions">
+      <div id="systemStateBadge" class="state-pill RUNNING">
+        <span class="pulse-dot"></span>
+        <span id="systemStateText">RUNNING</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Content -->
+  <main>
+    <!-- Controls Panel -->
+    <div class="controls-panel">
+      <div class="controls-group">
+        <button id="btnPause" class="btn btn-warning" onclick="sendControl('pause')">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+          Pause System
+        </button>
+        <button id="btnResume" class="btn btn-success" onclick="sendControl('resume')">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+          Resume System
+        </button>
+        <button id="btnDrain" class="btn btn-primary" onclick="sendControl('drain')">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
+          Drain System
+        </button>
+        <button id="btnTick" class="btn btn-neutral" onclick="sendTick()">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46A7.93 7.93 0 0020 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74A7.93 7.93 0 004 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/></svg>
+          Trigger Tick
+        </button>
+      </div>
+      <div class="refresh-badge">
+        <span id="countdownText">Refreshing in 3s</span>
+      </div>
+    </div>
+
+    <!-- KPI Grid -->
+    <div class="kpi-grid">
+      <div class="kpi-card">
+        <div class="kpi-title">Active Workers</div>
+        <div class="kpi-value" id="kpiWorkers">1</div>
+        <div class="kpi-sub">
+          <span id="kpiWorkerDetail">1 active &bull; 0 busy</span>
+        </div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-title">Tasks in Queue</div>
+        <div class="kpi-value" id="kpiQueue">0</div>
+        <div class="kpi-sub">
+          <span id="kpiQueueDetail">0 ready &bull; 0 running</span>
+        </div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-title">Completed Tasks</div>
+        <div class="kpi-value" id="kpiCompleted">0</div>
+        <div class="kpi-sub">
+          <span id="kpiCompletedDetail">100% verified single-send</span>
+        </div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-title">Safety & Cooldowns</div>
+        <div class="kpi-value" id="kpiSafety">0</div>
+        <div class="kpi-sub">
+          <span id="kpiSafetyDetail">0 active cooldowns</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Two-Column Operational Layout -->
+    <div class="dashboard-grid">
+      <!-- Left Column: Tasks Queue & Workers -->
+      <div style="display: flex; flex-direction: column; gap: 1.5rem;">
+        <!-- Worker Pool Panel -->
+        <div class="panel">
+          <div class="panel-header">
+            <h2>Active Worker Pool</h2>
+            <span class="panel-badge" id="workerPoolBadge">1 worker</span>
+          </div>
+          <div class="table-container">
+            <table>
+              <thead>
+                <tr>
+                  <th>Worker ID</th>
+                  <th>Mode</th>
+                  <th>Status</th>
+                  <th>Current Task</th>
+                  <th>Account</th>
+                </tr>
+              </thead>
+              <tbody id="workersTableBody">
+                <tr><td colspan="5" style="text-align: center; color: var(--text-dim);">Loading worker pool...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Task Queue Panel -->
+        <div class="panel">
+          <div class="panel-header">
+            <h2>Task Queue Breakdown</h2>
+            <span class="panel-badge" id="tasksBadge">Live State</span>
+          </div>
+          <div class="table-container">
+            <table>
+              <thead>
+                <tr>
+                  <th>Task ID</th>
+                  <th>Contact ID</th>
+                  <th>Type</th>
+                  <th>Priority</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody id="tasksTableBody">
+                <tr><td colspan="5" style="text-align: center; color: var(--text-dim);">Loading task queue...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- Right Column: Real-time Audit Stream -->
+      <div class="panel">
+        <div class="panel-header">
+          <h2>Live Observability Log</h2>
+          <span class="panel-badge">Audit Stream</span>
+        </div>
+        <div class="events-list" id="eventsContainer">
+          <div style="text-align: center; padding: 2rem; color: var(--text-dim);">Loading audit events...</div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <div id="toast">Command dispatched successfully</div>
+
+  <script>
+    let countdown = 3;
+
+    function showToast(msg) {
+      const toast = document.getElementById('toast');
+      toast.innerText = msg;
+      toast.classList.add('show');
+      setTimeout(() => toast.classList.remove('show'), 2500);
+    }
+
+    async function sendControl(action) {
+      try {
+        const res = await fetch(`/api/control/${action}`, { method: 'POST' });
+        const data = await res.json();
+        showToast(data.message || `System ${action} requested`);
+        fetchStatus();
+      } catch (e) {
+        showToast(`Failed to trigger ${action}: ` + e.message);
+      }
+    }
+
+    async function sendTick() {
+      try {
+        const res = await fetch('/api/scheduler/tick', { method: 'POST' });
+        const data = await res.json();
+        showToast(`Scheduler tick: ${data.dispatched || 0} tasks dispatched`);
+        fetchStatus();
+      } catch (e) {
+        showToast('Tick error: ' + e.message);
+      }
+    }
+
+    async function fetchStatus() {
+      try {
+        const res = await fetch('/api/status');
+        const data = await res.json();
+
+        // System State
+        const badge = document.getElementById('systemStateBadge');
+        const text = document.getElementById('systemStateText');
+        const state = data.system_state || 'STOPPED';
+        text.innerText = state;
+        badge.className = `state-pill ${state}`;
+
+        // KPIs
+        const workers = data.workers || {};
+        document.getElementById('kpiWorkers').innerText = workers.total || 0;
+        document.getElementById('kpiWorkerDetail').innerText = `${workers.active || 0} active • ${workers.idle || 0} idle`;
+
+        const tasks = data.tasks || {};
+        const readyCount = tasks.READY || 0;
+        const runningCount = tasks.RUNNING || 0;
+        document.getElementById('kpiQueue').innerText = readyCount + runningCount;
+        document.getElementById('kpiQueueDetail').innerText = `${readyCount} ready • ${runningCount} in-flight`;
+
+        const completedCount = tasks.COMPLETED || 0;
+        document.getElementById('kpiCompleted').innerText = completedCount;
+
+        const cooldowns = data.active_cooldowns || 0;
+        document.getElementById('kpiSafety').innerText = cooldowns;
+        document.getElementById('kpiSafetyDetail').innerText = `${cooldowns} active cooldowns`;
+
+        // Render Workers Table
+        renderWorkers(data.worker_list || []);
+
+        // Render Tasks Table
+        renderTasks(data.recent_tasks || []);
+
+        // Render Events
+        renderEvents(data.recent_events || []);
+
+      } catch (err) {
+        console.error("Status fetch failed", err);
+      }
+    }
+
+    function renderWorkers(workers) {
+      const tbody = document.getElementById('workersTableBody');
+      if (!workers || workers.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--text-dim); padding: 1.5rem;">No active workers registered</td></tr>';
+        return;
+      }
+      tbody.innerHTML = workers.map(w => `
+        <tr>
+          <td class="mono-cell" style="font-weight: 600;">${w.worker_id || w.id}</td>
+          <td><span class="badge" style="background: rgba(255,255,255,0.06);">${w.mode || 'SINGLE'}</span></td>
+          <td><span class="badge badge-${(w.status || 'idle').toLowerCase()}">${w.status || 'IDLE'}</span></td>
+          <td class="mono-cell">${w.current_task_id || '<span style="color: var(--text-dim);">—</span>'}</td>
+          <td>${w.account_id || '<span style="color: var(--text-dim);">default</span>'}</td>
+        </tr>
+      `).join('');
+    }
+
+    function renderTasks(tasks) {
+      const tbody = document.getElementById('tasksTableBody');
+      if (!tasks || tasks.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--text-dim); padding: 1.5rem;">No tasks found in repository</td></tr>';
+        return;
+      }
+      tbody.innerHTML = tasks.slice(0, 8).map(t => `
+        <tr>
+          <td class="mono-cell" style="font-weight: 500;">${t.id}</td>
+          <td class="mono-cell" style="color: var(--text-muted);">${t.contact_id || '—'}</td>
+          <td>${t.type || 'MESSAGE'}</td>
+          <td class="mono-cell">${t.priority || 10}</td>
+          <td><span class="badge badge-${(t.status || 'ready').toLowerCase()}">${t.status}</span></td>
+        </tr>
+      `).join('');
+    }
+
+    function renderEvents(events) {
+      const container = document.getElementById('eventsContainer');
+      if (!events || events.length === 0) {
+        container.innerHTML = '<div style="text-align: center; padding: 2rem; color: var(--text-dim);">No audit events recorded yet</div>';
+        return;
+      }
+      container.innerHTML = events.slice(0, 15).map(e => `
+        <div class="event-item">
+          <div class="event-header">
+            <span class="event-code">${e.event_code || 'EVENT'}</span>
+            <span class="event-time">${(e.timestamp || '').substring(11, 19)}</span>
+          </div>
+          <div class="event-detail">
+            ${e.entity_type ? `${e.entity_type} • ` : ''}${e.task_id ? `Task ${e.task_id}` : (e.worker_id ? `Worker ${e.worker_id}` : 'System operation')}
+          </div>
+        </div>
+      `).join('');
+    }
+
+    // Polling Loop
+    setInterval(() => {
+      countdown--;
+      if (countdown <= 0) {
+        fetchStatus();
+        countdown = 3;
+      }
+      document.getElementById('countdownText').innerText = `Refreshing in ${countdown}s`;
+    }, 1000);
+
+    // Initial load
+    fetchStatus();
+  </script>
+</body>
+</html>
