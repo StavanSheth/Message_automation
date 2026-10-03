@@ -91,8 +91,14 @@ class InstagramMessageComposer:
         if not session or not session.is_alive():
             return {"success": False, "reason": "session_not_alive"}
 
-        if not body or not isinstance(body, str):
-            raise AutomationError(code=ErrorCode.INVALID_DATA, message="Message body cannot be empty")
+        if not body or not isinstance(body, str) or not body.strip():
+            raise AutomationError(code=ErrorCode.INVALID_DATA, message="Message body cannot be empty or whitespace-only")
+
+        if len(body) > 1000:
+            raise AutomationError(
+                code=ErrorCode.INVALID_DATA,
+                message=f"Message body length ({len(body)}) exceeds maximum allowed limit (1000 characters)"
+            )
 
         result = session.evaluate(
             """(messageText) => {
@@ -106,18 +112,24 @@ class InstagramMessageComposer:
 
                 input.focus();
 
+                // Prevent duplicate insertion by clearing any residual text first
                 if (input.tagName === 'TEXTAREA' || input.tagName === 'INPUT') {
+                    input.value = '';
                     input.value = messageText;
                     input.dispatchEvent(new Event('input', { bubbles: true }));
                     input.dispatchEvent(new Event('change', { bubbles: true }));
                 } else {
                     // Contenteditable div
+                    input.innerText = '';
                     input.innerText = messageText;
                     input.dispatchEvent(new Event('input', { bubbles: true }));
                     input.dispatchEvent(new Event('change', { bubbles: true }));
                 }
 
-                return { success: true, text_entered: true };
+                // Verify exact text entered matches expected message
+                const actualEntered = (input.tagName === 'TEXTAREA' || input.tagName === 'INPUT') ? input.value : input.innerText;
+                const match = actualEntered.trim() === messageText.trim();
+                return { success: true, text_entered: true, verified_match: match };
             }""",
             body,
         )
@@ -132,4 +144,4 @@ class InstagramMessageComposer:
             logger.error(f"Failed to compose message: {reason}")
             return {"success": False, "reason": reason}
 
-        return {"success": True}
+        return {"success": True, "verified_match": result.get("verified_match", True)}

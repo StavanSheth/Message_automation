@@ -85,14 +85,63 @@ class BrowserDriver(ABC):
         """Capture screenshot to specified file path."""
         pass
 
-    @abstractmethod
-    def get_content(self) -> str:
-        """Return full HTML content of current page."""
+    def initialize(self) -> None:
+        """Initialize driver and prepare underlying engine without launching."""
         pass
+
+    def create_context(self, profile_path: Optional[str] = None) -> None:
+        """Create or initialize an isolated browser context."""
+        self.new_context(profile_path)
+
+    def create_page(self) -> None:
+        """Open a new page in the active context."""
+        self.new_page()
+
+    def verify_alive(self) -> bool:
+        """Verify driver and active page are responsive."""
+        return self.is_connected()
+
+    def get_console_errors(self) -> List[str]:
+        """Return captured console errors and warnings."""
+        return []
+
+    def get_network_failures(self) -> List[Dict[str, Any]]:
+        """Return captured failed network requests."""
+        return []
+
+    def screenshot_on_failure(self, path: str) -> bool:
+        """Attempt to capture a screenshot on failure without raising exceptions."""
+        try:
+            self.screenshot(path)
+            return True
+        except Exception:
+            return False
 
 
 import queue
 import threading
+
+
+import os
+
+
+def find_browser_executable() -> Optional[str]:
+    """Detect local installation of Chrome or Edge browser on Windows / Linux."""
+    candidates = [
+        os.path.expandvars(r"%ProgramFiles%\Google\Chrome\Application\chrome.exe"),
+        os.path.expandvars(r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe"),
+        os.path.expandvars(r"%LocalAppData%\Google\Chrome\Application\chrome.exe"),
+        os.path.expandvars(r"%ProgramFiles%\Microsoft\Edge\Application\msedge.exe"),
+        os.path.expandvars(r"%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe"),
+        "/usr/bin/google-chrome",
+        "/usr/bin/google-chrome-stable",
+        "/usr/bin/chromium-browser",
+        "/usr/bin/chromium",
+    ]
+    for c in candidates:
+        if c and os.path.isfile(c):
+            return c
+    return None
 
 
 class PlaywrightBrowserDriver(BrowserDriver):
@@ -114,6 +163,22 @@ class PlaywrightBrowserDriver(BrowserDriver):
         self._thread_id: Optional[int] = None
         self._queue: queue.Queue = queue.Queue()
         self._stop_event = threading.Event()
+        self._console_errors: List[str] = []
+        self._network_failures: List[Dict[str, Any]] = []
+
+    def initialize(self) -> None:
+        """Deterministic startup stage 1: initialize worker thread."""
+        if not self._worker_thread or not self._worker_thread.is_alive():
+            self._stop_event.clear()
+            ready_event = threading.Event()
+            self._worker_thread = threading.Thread(
+                target=self._worker_loop,
+                args=(ready_event,),
+                name="PlaywrightBrowserThread",
+                daemon=True,
+            )
+            self._worker_thread.start()
+            ready_event.wait()
 
     def _worker_loop(self, ready_event: threading.Event) -> None:
         self._thread_id = threading.get_ident()
@@ -146,19 +211,43 @@ class PlaywrightBrowserDriver(BrowserDriver):
             raise result_holder["err"]
         return result_holder.get("val")
 
+    def _setup_page_listeners(self, page) -> None:
+        """Attach listeners to capture console errors and network request failures."""
+        if not page:
+            return
+        try:
+            def on_console(msg):
+                if msg.type in ("error", "warning"):
+                    self._console_errors.append(f"[{msg.type.upper()}] {msg.text}")
+                    if len(self._console_errors) > 100:
+                        self._console_errors.pop(0)
+
+            def on_page_error(err):
+                self._console_errors.append(f"[UNCAUGHT] {err}")
+                if len(self._console_errors) > 100:
+                    self._console_errors.pop(0)
+
+            def on_request_failed(req):
+                failure = req.failure
+                self._network_failures.append({
+                    "url": req.url,
+                    "method": req.method,
+                    "failure_text": str(failure) if failure else "request_failed",
+                })
+                if len(self._network_failures) > 100:
+                    self._network_failures.pop(0)
+
+            page.on("console", on_console)
+            page.on("pageerror", on_page_error)
+            page.on("requestfailed", on_request_failed)
+        except Exception as e:
+            logger.debug(f"Failed to attach page diagnostic listeners: {e}")
+
     def launch(self, config: Optional[BrowserLaunchConfig] = None) -> None:
+        """Deterministic startup stage 2: launch browser engine."""
         if config:
             self.config = config
-        self._stop_event.clear()
-        ready_event = threading.Event()
-        self._worker_thread = threading.Thread(
-            target=self._worker_loop,
-            args=(ready_event,),
-            name="PlaywrightBrowserThread",
-            daemon=True,
-        )
-        self._worker_thread.start()
-        ready_event.wait()
+        self.initialize()
         try:
             self._dispatch(self._raw_launch)
         except Exception as e:
@@ -188,34 +277,68 @@ class PlaywrightBrowserDriver(BrowserDriver):
         launch_args = list(self.config.extra_args)
         timeout_ms = self.config.timeout_seconds * 1000
 
+        # Auto-detect Chrome executable if executable_path not explicitly specified
+        exec_path = self.config.executable_path
+        if not exec_path and b_type == "chrome":
+            detected = find_browser_executable()
+            if detected:
+                exec_path = detected
+
+        launch_kwargs: Dict[str, Any] = {
+            "headless": self.config.headless,
+            "args": launch_args,
+            "timeout": timeout_ms,
+        }
+        if channel:
+            launch_kwargs["channel"] = channel
+        if exec_path and not channel:
+            launch_kwargs["executable_path"] = exec_path
+
         if self.config.profile_directory:
             self._is_persistent = True
-            self._context = launcher.launch_persistent_context(
-                user_data_dir=self.config.profile_directory,
-                headless=self.config.headless,
-                channel=channel,
-                args=launch_args,
-                timeout=timeout_ms,
-                viewport={"width": self.config.viewport_width, "height": self.config.viewport_height},
-                user_agent=self.config.user_agent,
-            )
+            launch_kwargs["user_data_dir"] = self.config.profile_directory
+            launch_kwargs["viewport"] = {"width": self.config.viewport_width, "height": self.config.viewport_height}
+            if self.config.user_agent:
+                launch_kwargs["user_agent"] = self.config.user_agent
+            self._context = launcher.launch_persistent_context(**launch_kwargs)
             pages = self._context.pages
             self._page = pages[0] if pages else self._context.new_page()
+            self._setup_page_listeners(self._page)
         else:
             self._is_persistent = False
-            self._browser = launcher.launch(
-                headless=self.config.headless,
-                channel=channel,
-                args=launch_args,
-                timeout=timeout_ms,
-            )
+            self._browser = launcher.launch(**launch_kwargs)
             self._context = self._browser.new_context(
                 viewport={"width": self.config.viewport_width, "height": self.config.viewport_height},
                 user_agent=self.config.user_agent,
             )
             self._page = self._context.new_page()
+            self._setup_page_listeners(self._page)
 
         logger.info("Playwright browser launched successfully", browser_type=b_type)
+
+    def create_context(self, profile_path: Optional[str] = None) -> None:
+        """Deterministic startup stage 3: create context."""
+        self.new_context(profile_path)
+
+    def create_page(self) -> None:
+        """Deterministic startup stage 4: create page."""
+        self.new_page()
+
+    def verify_alive(self) -> bool:
+        """Deterministic startup stage 5: verify responsive page and context."""
+        if not self.is_connected():
+            return False
+        try:
+            val = self.evaluate("1 + 1")
+            return val == 2
+        except Exception:
+            return False
+
+    def get_console_errors(self) -> List[str]:
+        return list(self._console_errors)
+
+    def get_network_failures(self) -> List[Dict[str, Any]]:
+        return list(self._network_failures)
 
     def is_connected(self) -> bool:
         if not self._worker_thread or not self._worker_thread.is_alive():

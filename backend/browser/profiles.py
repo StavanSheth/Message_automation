@@ -35,6 +35,7 @@ class BrowserProfileManager:
         self._profiles: Dict[str, BrowserProfile] = {}
         self._validate_base_directory(self.base_directory)
         self.base_directory.mkdir(parents=True, exist_ok=True)
+        self.discover_existing_profiles()
 
     def _validate_base_directory(self, path: Path) -> None:
         """Ensure profile path is safe and not placed inside code or document folders."""
@@ -127,7 +128,7 @@ class BrowserProfileManager:
                         last_used_at=now_iso,
                     )
                     self._profiles[profile_id] = profile
-                    discovered.append(profile)
+                discovered.append(self._profiles[profile_id])
 
         return discovered
 
@@ -138,4 +139,21 @@ class BrowserProfileManager:
             return False
         profile.status = "INACTIVE"
         return True
+
+    def validate_profile_usability(self, profile_id: str) -> bool:
+        """Validate that persistent profile directory exists and is usable across restarts."""
+        profile = self.get_profile(profile_id)
+        if not profile:
+            return False
+        p = Path(profile.profile_path)
+        if not p.is_dir():
+            return False
+        # Check readability and writeability
+        test_file = p / ".profile_health_check"
+        try:
+            test_file.write_text("ok", encoding="utf-8")
+            test_file.unlink(missing_ok=True)
+            return True
+        except Exception:
+            return False
 

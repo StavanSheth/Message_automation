@@ -59,6 +59,14 @@ class ErrorRepository(BaseRepository):
             cursor = conn.execute(query, (resolved_at, error_id))
             return cursor.rowcount > 0
 
+    def list_recent(self, limit: int = 10) -> List[ErrorRecord]:
+        conn = self.db.get_connection()
+        cursor = conn.execute(
+            "SELECT * FROM errors ORDER BY created_at DESC LIMIT ?;",
+            (limit,),
+        )
+        return [self._row_to_error(row) for row in cursor.fetchall()]
+
     def _row_to_error(self, row: sqlite3.Row) -> ErrorRecord:
         return ErrorRecord(
             id=row["id"],

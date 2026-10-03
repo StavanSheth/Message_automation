@@ -27,12 +27,20 @@ class BrowserStatus(str, Enum):
 
 class SessionStatus(str, Enum):
     NOT_STARTED = "NOT_STARTED"
+    CREATED = "CREATED"
     STARTING = "STARTING"
+    RUNNING = "RUNNING"
     READY = "READY"
+    AUTHENTICATED = "AUTHENTICATED"
     BUSY = "BUSY"
+    IDLE = "IDLE"
     STOPPING = "STOPPING"
     STOPPED = "STOPPED"
     CRASHED = "CRASHED"
+    DEGRADED = "DEGRADED"
+    AUTH_REQUIRED = "AUTH_REQUIRED"
+    CHALLENGE = "CHALLENGE"
+    CHECKPOINT = "CHECKPOINT"
     UNAVAILABLE = "UNAVAILABLE"
 
 
@@ -53,6 +61,7 @@ class BrowserLaunchConfig:
     viewport_width: int = 1280
     viewport_height: int = 800
     user_agent: Optional[str] = None
+    executable_path: Optional[str] = None
     extra_args: List[str] = field(default_factory=list)
 
 
@@ -66,6 +75,7 @@ class BrowserHealthResult:
     latency_ms: float = 0.0
     error_code: Optional[str] = None
     details: Optional[str] = None
+    pid: Optional[int] = None
 
 
 @dataclass
@@ -78,3 +88,4 @@ class BrowserSessionInfo:
     created_at: str = field(default_factory=utc_now_iso)
     last_activity_at: str = field(default_factory=utc_now_iso)
     current_url: Optional[str] = None
+    pid: Optional[int] = None

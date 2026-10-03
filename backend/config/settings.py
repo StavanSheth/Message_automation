@@ -26,10 +26,13 @@ class AppSettings:
     log_level: str = "INFO"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
     database_path: str = "data/app.db"
     application_data_path: str = "data"
+    application_mode: str = "MANUAL"  # MANUAL | AUTOMATIC
     browser_type: str = "chromium"  # chromium | chrome | edge
-    browser_headless: bool = True
+    browser_headless: bool = False  # Default: Visible browser for local/manual operation
     browser_profile_directory: str = "data/browser_profiles"
     browser_startup_timeout: int = 30
+    browser_keep_open: bool = False
+    browser_devtools: bool = False
     worker_heartbeat_interval: int = 15
     worker_stale_timeout: int = 60
     spreadsheet_navigation_timeout: int = 30
@@ -58,8 +61,10 @@ class AppSettings:
 
     def validate(self) -> None:
         """Validate configuration values."""
-        if self.execution_mode not in ("MANUAL", "AUTOMATIC"):
+        if self.execution_mode.upper() not in ("MANUAL", "AUTOMATIC"):
             raise ValidationError(f"Invalid execution_mode: {self.execution_mode}. Must be MANUAL or AUTOMATIC.")
+        if self.application_mode.upper() not in ("MANUAL", "AUTOMATIC"):
+            raise ValidationError(f"Invalid application_mode: {self.application_mode}. Must be MANUAL or AUTOMATIC.")
         if not (0.0 <= self.verification_threshold <= 1.0):
             raise ValidationError(f"verification_threshold must be between 0.0 and 1.0, got {self.verification_threshold}")
         if self.message_mode not in ("SINGLE", "MULTI"):
@@ -212,12 +217,21 @@ class AppSettings:
                     except Exception as e:
                         raise ValidationError(f"Failed to parse config file '{p}': {e}")
 
-        # 2. From environment variables (e.g. APP_LOG_LEVEL -> log_level)
+        # 2. From environment variables (e.g. APP_LOG_LEVEL or LOG_LEVEL -> log_level)
         valid_keys = {f.name for f in cls.__dataclass_fields__.values()}
         for key in valid_keys:
-            env_var = f"{env_prefix}{key.upper()}"
-            if env_var in os.environ:
-                data[key] = os.environ[env_var]
+            env_var_prefixed = f"{env_prefix}{key.upper()}"
+            env_var_direct = key.upper()
+            if env_var_prefixed in os.environ:
+                data[key] = os.environ[env_var_prefixed]
+            elif env_var_direct in os.environ:
+                data[key] = os.environ[env_var_direct]
+
+        # Sync execution_mode and application_mode if either was set
+        if "application_mode" in data and "execution_mode" not in data:
+            data["execution_mode"] = data["application_mode"]
+        elif "execution_mode" in data and "application_mode" not in data:
+            data["application_mode"] = data["execution_mode"]
 
         # 3. From overrides
         if overrides:

@@ -137,8 +137,10 @@ class BrowserManager:
             )
 
         session_id = generate_id("BSESS")
-        prof_name = profile_name or (f"worker_{worker_id}" if worker_id else f"session_{session_id}")
+        prof_name = profile_name or (f"account_{account_id}" if account_id else (f"worker_{worker_id}" if worker_id else f"session_{session_id}"))
         profile = self.profile_manager.create_or_get_profile(prof_name)
+        if not self.profile_manager.validate_profile_usability(profile.profile_id):
+            logger.warning(f"Profile directory {profile.profile_path} has permissions/usability issues, resetting")
 
         # Profile isolation: verify profile is not in use by another active worker
         for s in self._active_sessions.values():

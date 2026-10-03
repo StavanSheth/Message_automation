@@ -101,9 +101,17 @@ class BrowserSessionInstance:
         self.stop()
         self.start()
 
+    ACTIVE_STATES = (
+        SessionStatus.READY,
+        SessionStatus.RUNNING,
+        SessionStatus.AUTHENTICATED,
+        SessionStatus.BUSY,
+        SessionStatus.IDLE,
+    )
+
     def is_alive(self) -> bool:
         """Check if driver is currently connected and responsive."""
-        if self.status not in (SessionStatus.READY, SessionStatus.BUSY):
+        if self.status not in self.ACTIVE_STATES:
             return False
         return self.driver.is_connected()
 
@@ -164,7 +172,7 @@ class BrowserSessionInstance:
 
     def health_check(self) -> BrowserHealthResult:
         """Perform responsive health check."""
-        if self.status not in (SessionStatus.READY, SessionStatus.BUSY):
+        if self.status not in self.ACTIVE_STATES:
             return BrowserHealthResult(
                 healthy=False,
                 browser_connected=False,
@@ -227,4 +235,5 @@ class BrowserSessionInstance:
             created_at=self.created_at,
             last_activity_at=self.last_activity_at,
             current_url=self.current_url,
+            pid=getattr(self.driver, "pid", None),
         )

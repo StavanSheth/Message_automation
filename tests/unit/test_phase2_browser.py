@@ -509,7 +509,7 @@ class TestPhase2Settings:
         s = AppSettings()
         s.validate()
         assert s.browser_type == "chromium"
-        assert s.browser_headless is True
+        assert s.browser_headless is False
         assert s.browser_profile_directory == "data/browser_profiles"
         assert s.browser_startup_timeout == 30
         assert s.worker_heartbeat_interval == 15
