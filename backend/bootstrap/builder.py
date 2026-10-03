@@ -25,6 +25,8 @@ from backend.repositories.system_control_repo import SystemControlRepository
 from backend.repositories.cooldown_repo import CooldownRepository
 from backend.repositories.reconciliation_repo import ReconciliationRepository
 from backend.repositories.manual_review_repo import ManualReviewRepository
+from backend.repositories.source_record_repo import SourceRecordRepository
+from backend.repositories.sync_run_repo import SyncRunRepository
 
 # Services
 from backend.browser.instagram.auth_validator import InstagramAuthValidator
@@ -43,6 +45,8 @@ from backend.application.retention_service import RetentionService
 from backend.application.manual_review_service import ManualReviewService
 from backend.application.status_service import StatusService
 from backend.application.metrics_service import MetricsService
+from backend.application.source_service import SourceService
+from backend.application.spreadsheet_ingestion import SpreadsheetIngestionService
 
 from backend.domain.enums import SystemState, EventCode, EventLevel
 from backend.events.logger import get_logger
@@ -89,6 +93,8 @@ class ProductionApp:
     status_service: StatusService
     metrics_service: MetricsService
     backup_service: DatabaseBackupService
+    source_service: Optional[SourceService] = None
+    spreadsheet_ingestion_service: Optional[SpreadsheetIngestionService] = None
 
     def validate_dependency_graph(self) -> Tuple[bool, List[str]]:
         """
@@ -356,6 +362,22 @@ def build_production_app(
     lifecycle_manager.scheduler = scheduler
     worker_manager.task_dispatcher = task_dispatcher
 
+    source_record_repo = overrides.get("source_record_repo") or SourceRecordRepository(database)
+    sync_run_repo = overrides.get("sync_run_repo") or SyncRunRepository(database)
+    source_service = overrides.get("source_service") or SourceService(
+        contact_repo=contact_repo,
+        source_record_repo=source_record_repo,
+        task_repo=task_repo,
+        message_repo=message_repo,
+        followup_repo=followup_repo,
+        event_repo=event_repo,
+        sync_run_repo=sync_run_repo,
+    )
+    spreadsheet_ingestion_service = overrides.get("spreadsheet_ingestion_service") or SpreadsheetIngestionService(
+        source_service=source_service,
+        browser_manager=browser_manager,
+    )
+
     return ProductionApp(
         settings=app_settings,
         db=database,
@@ -391,4 +413,6 @@ def build_production_app(
         status_service=status_service,
         metrics_service=metrics_service,
         backup_service=backup_service,
+        source_service=source_service,
+        spreadsheet_ingestion_service=spreadsheet_ingestion_service,
     )

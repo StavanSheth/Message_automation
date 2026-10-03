@@ -224,6 +224,30 @@ class SourceService:
         contact.source_record_id = source_rec_id
         self.contact_repo.update(contact)
 
+        # Determine initial task status from Remarks / Notes
+        initial_task_state = TaskState.READY
+        initial_msg_state = MessageState.PENDING
+
+        remarks_lower = ""
+        if row.raw_values:
+            for k, v in row.raw_values.items():
+                if any(r_key in str(k).lower() for r_key in ("remarks", "remark", "status")):
+                    remarks_lower = str(v).strip().lower()
+                    break
+
+        if not remarks_lower and row.notes and "remarks:" in row.notes.lower():
+            for part in row.notes.split("|"):
+                if "remarks:" in part.lower():
+                    remarks_lower = part.split(":", 1)[1].strip().lower()
+                    break
+
+        if remarks_lower in ("done", "completed", "sent", "already sent"):
+            initial_task_state = TaskState.COMPLETED
+            initial_msg_state = MessageState.SENT
+        elif remarks_lower in ("permanently closed", "not reachable", "closed", "invalid", "not applicable", "n/a"):
+            initial_task_state = TaskState.SKIPPED
+            initial_msg_state = MessageState.SKIPPED
+
         # Create Initial Message Task
         task_id = generate_id("TASK")
         task = Task(
@@ -231,9 +255,10 @@ class SourceService:
             contact_id=contact.id,
             type=TaskType.MESSAGE,
             sequence=0,
-            status=TaskState.READY,
+            status=initial_task_state,
             priority=0,
             scheduled_at=now_iso,
+            completed_at=now_iso if initial_task_state in (TaskState.COMPLETED, TaskState.SKIPPED) else None,
             created_at=now_iso,
             updated_at=now_iso,
         )
@@ -245,7 +270,7 @@ class SourceService:
                 level=EventLevel.INFO,
                 entity_type="task",
                 entity_id=task.id,
-                payload={"contact_id": contact.id, "type": TaskType.MESSAGE.value},
+                payload={"contact_id": contact.id, "type": TaskType.MESSAGE.value, "status": initial_task_state.value},
             )
         except DuplicateTaskError:
             existing_task = self.task_repo.get_by_contact_and_type(contact.id, TaskType.MESSAGE, sequence=0)
@@ -262,7 +287,8 @@ class SourceService:
                 task_id=task.id,
                 sequence=0,
                 body=row.message,
-                status=MessageState.PENDING,
+                status=initial_msg_state,
+                confirmed_at=now_iso if initial_msg_state == MessageState.SENT else None,
                 created_at=now_iso,
                 updated_at=now_iso,
             )

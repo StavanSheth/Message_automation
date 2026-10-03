@@ -1048,6 +1048,47 @@
         </div>
       </section>
 
+      <!-- LEADS SPREADSHEET INGESTION (LINK-BASED & FILE) -->
+      <section class="pipeline-panel" id="leads-ingest" style="border: 1px solid rgba(99, 102, 241, 0.3); background: rgba(30, 27, 75, 0.25);">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <div>
+            <div style="font-size: 0.95rem; font-weight: 700; color: #fff; display: flex; align-items: center; gap: 0.5rem;">
+              <span style="font-size: 1.1rem;">📊</span> Google Sheets &amp; Excel Leads Ingestion
+            </div>
+            <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.2rem;">
+              Paste your Google Sheets link, Web Excel URL, or local file. The agent reads the sheet in Chrome, parses the client columns, queues pending rows, and navigates directly to Instagram links.
+            </div>
+          </div>
+          <button class="btn" onclick="clearDummyData()" style="background: rgba(239, 68, 68, 0.12); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.3); font-size: 0.75rem; padding: 0.4rem 0.75rem;">
+            🗑 Clear Dummy Data
+          </button>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 2fr 1.2fr auto; gap: 0.75rem; align-items: end; margin-top: 0.5rem;">
+          <div>
+            <label style="display: block; font-size: 0.7rem; font-weight: 700; color: var(--text-muted); margin-bottom: 0.35rem; letter-spacing: 0.04em;">
+              SPREADSHEET LINK / FILE PATH
+            </label>
+            <input type="text" id="sheetUrlInput" placeholder="https://docs.google.com/spreadsheets/d/... or leads.xlsx" style="width: 100%; background: rgba(0,0,0,0.35); border: 1px solid var(--border-subtle); border-radius: 6px; padding: 0.6rem 0.85rem; color: #fff; font-size: 0.82rem; font-family: 'JetBrains Mono', monospace;" />
+          </div>
+
+          <div>
+            <label style="display: block; font-size: 0.7rem; font-weight: 700; color: var(--text-muted); margin-bottom: 0.35rem; letter-spacing: 0.04em;">
+              INITIAL MESSAGE TEMPLATE (OPTIONAL)
+            </label>
+            <input type="text" id="msgTemplateInput" placeholder="Hello {name}, hope you are doing well!" style="width: 100%; background: rgba(0,0,0,0.35); border: 1px solid var(--border-subtle); border-radius: 6px; padding: 0.6rem 0.85rem; color: #fff; font-size: 0.82rem;" />
+          </div>
+
+          <div>
+            <button class="btn" id="btnImportSheet" onclick="importSpreadsheet()" style="background: linear-gradient(135deg, #3b82f6, #6366f1); color: #fff; font-weight: 600; padding: 0.65rem 1.25rem; border-radius: 6px; border: none; cursor: pointer; display: flex; align-items: center; gap: 0.4rem;">
+              <span>⚡</span> Import &amp; Queue Leads
+            </button>
+          </div>
+        </div>
+
+        <div id="importResultBanner" style="display: none; margin-top: 0.75rem; padding: 0.75rem 1rem; border-radius: 6px; font-size: 0.82rem; font-weight: 500;"></div>
+      </section>
+
       <!-- 4. EXECUTION PIPELINE (11 NODES) -->
       <section class="pipeline-panel" id="pipeline">
         <div class="pipeline-header">
@@ -1925,6 +1966,71 @@
           </tbody>
         </table>
       `;
+    }
+
+    async function importSpreadsheet() {
+      const urlInput = document.getElementById('sheetUrlInput');
+      const templateInput = document.getElementById('msgTemplateInput');
+      const btn = document.getElementById('btnImportSheet');
+      const banner = document.getElementById('importResultBanner');
+
+      const url = (urlInput.value || '').trim();
+      const template = (templateInput.value || '').trim();
+
+      if (!url) {
+        alert('Please enter a Google Sheets URL or Excel file path');
+        urlInput.focus();
+        return;
+      }
+
+      btn.disabled = true;
+      btn.innerText = 'Importing...';
+      banner.style.display = 'none';
+
+      try {
+        const res = await fetch('/api/source/import', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: url, message_template: template })
+        });
+        const data = await res.json();
+        banner.style.display = 'block';
+        if (res.ok && data.success) {
+          banner.style.background = 'rgba(16, 185, 129, 0.15)';
+          banner.style.color = '#34d399';
+          banner.style.border = '1px solid rgba(16, 185, 129, 0.3)';
+          banner.innerHTML = '<strong>Success!</strong> ' + (data.message || 'Leads successfully imported!');
+          if (typeof fetchStatus === 'function') fetchStatus();
+        } else {
+          banner.style.background = 'rgba(239, 68, 68, 0.15)';
+          banner.style.color = '#f87171';
+          banner.style.border = '1px solid rgba(239, 68, 68, 0.3)';
+          banner.innerHTML = '<strong>Error:</strong> ' + (data.message || data.error || 'Failed to import spreadsheet');
+        }
+      } catch (err) {
+        banner.style.display = 'block';
+        banner.style.background = 'rgba(239, 68, 68, 0.15)';
+        banner.style.color = '#f87171';
+        banner.style.border = '1px solid rgba(239, 68, 68, 0.3)';
+        banner.innerHTML = '<strong>Network Error:</strong> ' + err.message;
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<span>⚡</span> Import &amp; Queue Leads';
+      }
+    }
+
+    async function clearDummyData() {
+      if (!confirm('Are you sure you want to remove all dummy data from the database? This cannot be undone.')) {
+        return;
+      }
+      try {
+        const res = await fetch('/api/data/clear-dummy', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+        const data = await res.json();
+        alert(data.message || 'Dummy data cleared!');
+        if (typeof fetchStatus === 'function') fetchStatus();
+      } catch (err) {
+        alert('Error clearing dummy data: ' + err.message);
+      }
     }
 
     // Auto-refresh loop every 3 seconds

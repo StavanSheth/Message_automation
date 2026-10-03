@@ -212,8 +212,47 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 latest = str(backups[0])
                 is_valid = service.verify_backup(latest)
                 self._send_json(200, {"success": is_valid, "message": f"Backup {os.path.basename(latest)} integrity verified: Passed" if is_valid else "Verification failed"})
+                return
             except Exception as e:
                 self._send_json(500, {"success": False, "message": f"Backup verify failed: {e}"})
+                return
+
+        if path == "/api/source/import":
+            source_url = body.get("url") or body.get("source") or body.get("source_url") or body.get("file_path")
+            raw_data = body.get("raw_data")
+            msg_template = body.get("message_template") or body.get("template")
+
+            source_input = (source_url or "").strip() or (raw_data or "").strip()
+            if not source_input:
+                self._send_json(400, {"success": False, "message": "Missing spreadsheet link, file path, or table data"})
+                return
+
+            try:
+                ingestion_service = getattr(self.app, "spreadsheet_ingestion_service", None)
+                if not ingestion_service:
+                    from backend.application.spreadsheet_ingestion import SpreadsheetIngestionService
+                    ingestion_service = SpreadsheetIngestionService(
+                        source_service=self.app.source_service,
+                        browser_manager=self.app.browser_manager,
+                    )
+
+                result = ingestion_service.import_from_input(
+                    source_input=source_input,
+                    message_template=msg_template,
+                )
+                self._send_json(200, result)
+            except Exception as e:
+                logger.error(f"Spreadsheet import error: {e}", exc_info=True)
+                self._send_json(400, {"success": False, "message": f"Import failed: {e}"})
+            return
+
+        if path == "/api/data/clear-dummy":
+            try:
+                from scripts.clear_dummy_data import clear_dummy_data
+                clear_dummy_data()
+                self._send_json(200, {"success": True, "message": "All dummy data cleared from database!"})
+            except Exception as e:
+                self._send_json(500, {"success": False, "message": f"Clear failed: {e}"})
             return
 
         self._send_json(404, {"error": f"Unknown POST endpoint: {path}"})

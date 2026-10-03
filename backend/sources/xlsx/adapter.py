@@ -19,9 +19,25 @@ HEADER_ALIASES: Dict[str, str] = {
     "contact id": "contact_id",
     "contact_id": "contact_id",
     "id": "contact_id",
+    "id no": "contact_id",
+    "id no.": "contact_id",
+    "id_no": "contact_id",
     "name": "name",
     "full name": "name",
     "target name": "name",
+    "client name": "name",
+    "client": "name",
+    "business industry": "industry",
+    "industry": "industry",
+    "google maps link": "google_maps_link",
+    "google maps": "google_maps_link",
+    "maps link": "google_maps_link",
+    "website link": "website_link",
+    "website": "website_link",
+    "instagram id/ link": "instagram_url",
+    "instagram id / link": "instagram_url",
+    "instagram id/link": "instagram_url",
+    "instagram id": "instagram_url",
     "instagram url": "instagram_url",
     "instagram_url": "instagram_url",
     "ig url": "instagram_url",
@@ -37,11 +53,15 @@ HEADER_ALIASES: Dict[str, str] = {
     "message": "message",
     "initial message": "message",
     "msg": "message",
+    "remarks": "remarks",
+    "remark": "remarks",
+    "status": "remarks",
     "follow-up 1 message": "followup_1_message",
     "followup 1 message": "followup_1_message",
     "follow up 1 message": "followup_1_message",
-    "follow-up 1": "followup_1_message",
-    "followup 1": "followup_1_message",
+    "follow-up 1": "followup_1",
+    "followup 1": "followup_1",
+    "follow up 1": "followup_1",
     "follow-up 1 delay": "followup_1_delay_seconds",
     "followup 1 delay": "followup_1_delay_seconds",
     "follow up 1 delay": "followup_1_delay_seconds",
@@ -67,7 +87,10 @@ def normalize_header(header: str) -> Optional[str]:
     if not header:
         return None
     cleaned = re.sub(r"\s+", " ", str(header).strip().lower())
-    return HEADER_ALIASES.get(cleaned, cleaned)
+    if cleaned in HEADER_ALIASES:
+        return HEADER_ALIASES[cleaned]
+    cleaned_punct = re.sub(r"[^\w\s/]", "", cleaned).strip()
+    return HEADER_ALIASES.get(cleaned_punct, cleaned)
 
 
 def calculate_row_checksum(row_data: Dict[str, Any]) -> str:
@@ -144,14 +167,22 @@ class LocalXlsxSource(SourceAdapter):
                     self._header_col_map[norm_key] = col_idx
                     col_to_field[col_idx] = norm_key
 
-        # Validate mandatory headers: name, instagram_url, message
-        required_fields = ["name", "instagram_url", "message"]
-        missing = [rf for rf in required_fields if rf not in self._header_col_map]
-        if missing:
+        # Validate mandatory headers: instagram_url (or username)
+        is_leads_format = any(k in self._header_col_map for k in ("remarks", "industry", "google_maps_link", "website_link", "client"))
+        if "instagram_url" not in self._header_col_map and "username" not in self._header_col_map:
             raise ValidationError(
-                f"Missing required columns in Excel sheet: {', '.join(missing)}. "
+                f"Missing required columns in Excel sheet: instagram_url. "
                 f"Found columns: {list(self._header_col_map.keys())}"
             )
+
+        if not is_leads_format:
+            required_fields = ["name", "instagram_url", "message"]
+            missing = [rf for rf in required_fields if rf not in self._header_col_map]
+            if missing:
+                raise ValidationError(
+                    f"Missing required columns in Excel sheet: {', '.join(missing)}. "
+                    f"Found columns: {list(self._header_col_map.keys())}"
+                )
 
         # 2. Parse Data Rows
         rows: List[SourceRow] = []
@@ -171,16 +202,29 @@ class LocalXlsxSource(SourceAdapter):
                 continue  # Skip entirely empty rows
 
             # Validate row required fields
-            name_val = str(raw_values.get("name") or "").strip()
             url_val = str(raw_values.get("instagram_url") or "").strip()
-            msg_val = str(raw_values.get("message") or "").strip()
+            if not url_val and raw_values.get("username"):
+                un = str(raw_values["username"]).strip().lstrip("@")
+                if un:
+                    url_val = f"https://www.instagram.com/{un}/"
 
-            if not name_val:
-                raise ValidationError(f"Row {row_idx}: 'Name' is required and cannot be empty.")
             if not url_val:
                 raise ValidationError(f"Row {row_idx}: 'Instagram URL' is required and cannot be empty.")
+
+            name_val = str(raw_values.get("name") or "").strip()
+            if not name_val:
+                if is_leads_format:
+                    parts = [p for p in url_val.rstrip("/").split("/") if p and "instagram.com" not in p]
+                    name_val = parts[-1] if parts else "Target"
+                else:
+                    raise ValidationError(f"Row {row_idx}: 'Name' is required and cannot be empty.")
+
+            msg_val = str(raw_values.get("message") or "").strip()
             if not msg_val:
-                raise ValidationError(f"Row {row_idx}: 'Message' is required and cannot be empty.")
+                if is_leads_format:
+                    msg_val = f"Hello {name_val}, hope you are doing well!"
+                else:
+                    raise ValidationError(f"Row {row_idx}: 'Message' is required and cannot be empty.")
 
             # Parse optional followers
             followers: Optional[int] = None
@@ -214,9 +258,29 @@ class LocalXlsxSource(SourceAdapter):
             # Contact ID
             cid_val = str(raw_values.get("contact_id") or "").strip() or None
             username_val = str(raw_values.get("username") or "").strip() or None
-            notes_val = str(raw_values.get("notes") or "").strip() or None
-            fu1_msg = str(raw_values.get("followup_1_message") or "").strip() or None
+
+            fu1_raw = str(raw_values.get("followup_1_message") or raw_values.get("followup_1") or "").strip()
+            fu1_msg = None
+            if fu1_raw and fu1_raw.lower() not in ("done", "not applicable", "pending", "n/a", "na", "-", "0"):
+                fu1_msg = fu1_raw
             fu2_msg = str(raw_values.get("followup_2_message") or "").strip() or None
+
+            # Build rich notes from extra metadata fields
+            notes_parts = []
+            if raw_values.get("notes"):
+                notes_parts.append(str(raw_values["notes"]).strip())
+            if raw_values.get("industry"):
+                notes_parts.append(f"Industry: {raw_values['industry']}")
+            if raw_values.get("google_maps_link"):
+                notes_parts.append(f"Maps: {raw_values['google_maps_link']}")
+            if raw_values.get("website_link"):
+                notes_parts.append(f"Website: {raw_values['website_link']}")
+            if raw_values.get("remarks"):
+                notes_parts.append(f"Remarks: {raw_values['remarks']}")
+            if raw_values.get("followup_1"):
+                notes_parts.append(f"Follow Up 1: {raw_values['followup_1']}")
+
+            built_notes = " | ".join(notes_parts) if notes_parts else None
 
             # Checksum
             checksum = calculate_row_checksum(raw_values)
@@ -234,7 +298,7 @@ class LocalXlsxSource(SourceAdapter):
                 followup_1_delay_seconds=fu1_delay,
                 followup_2_message=fu2_msg,
                 followup_2_delay_seconds=fu2_delay,
-                notes=notes_val,
+                notes=built_notes,
                 raw_values=raw_values,
                 checksum=checksum,
             )
