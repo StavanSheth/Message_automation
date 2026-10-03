@@ -95,6 +95,7 @@ class ProductionApp:
     backup_service: DatabaseBackupService
     source_service: Optional[SourceService] = None
     spreadsheet_ingestion_service: Optional[SpreadsheetIngestionService] = None
+    interactive_startup_service: Optional[Any] = None
 
     def validate_dependency_graph(self) -> Tuple[bool, List[str]]:
         """
@@ -380,6 +381,14 @@ def build_production_app(
         source_service=source_service,
         browser_manager=browser_manager,
     )
+    from backend.browser.interactive_startup import InteractiveBrowserStartupService
+    interactive_startup_service = overrides.get("interactive_startup_service") or InteractiveBrowserStartupService(
+        worker_manager=worker_manager,
+        browser_manager=browser_manager,
+        auth_validator=auth_validator,
+        event_repo=event_repo,
+        settings=app_settings,
+    )
 
     return ProductionApp(
         settings=app_settings,
@@ -418,4 +427,5 @@ def build_production_app(
         backup_service=backup_service,
         source_service=source_service,
         spreadsheet_ingestion_service=spreadsheet_ingestion_service,
+        interactive_startup_service=interactive_startup_service,
     )

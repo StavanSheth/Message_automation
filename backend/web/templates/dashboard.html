@@ -1249,10 +1249,15 @@
               <span style="color: var(--text-dim);">Elapsed / Active:</span>
               <span id="obsElapsed" style="font-family:'JetBrains Mono',monospace;">Active</span>
             </div>
-            <div style="display: flex; gap: 0.5rem; margin-top: 0.5rem;">
-              <button class="btn btn-tick" style="flex:1;" onclick="pauseApplication()">Pause</button>
-              <button class="btn btn-tick" style="flex:1;" onclick="resumeApplication()">Resume</button>
-              <button class="btn btn-tick" style="flex:1;" onclick="refreshScreenshot()">Screenshot</button>
+            <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.4rem; margin-top: 0.5rem;">
+              <button class="btn btn-tick" onclick="startWorker()">Start Worker</button>
+              <button class="btn btn-tick" onclick="stopWorker()">Stop Worker</button>
+              <button class="btn btn-tick" onclick="pauseApplication()">Pause</button>
+              <button class="btn btn-tick" onclick="resumeApplication()">Resume</button>
+              <button class="btn btn-tick" onclick="restartBrowser()">Restart Browser</button>
+              <button class="btn btn-tick" onclick="openBrowserWindow()">Open Browser</button>
+              <button class="btn btn-tick" onclick="checkInstagramLogin()">Check Login</button>
+              <button class="btn btn-tick" onclick="refreshScreenshot()">Screenshot</button>
             </div>
           </div>
         </div>
@@ -2086,6 +2091,60 @@
       const img = document.getElementById('liveBrowserView');
       if (img) {
         img.src = '/browser/screenshot?t=' + Date.now();
+      }
+    }
+
+    async function startWorker() {
+      try {
+        const res = await fetch('/api/worker/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+        const d = await res.json();
+        alert(d.message || (d.success ? 'Worker started' : 'Failed to start worker'));
+        pollStatus();
+      } catch (e) {
+        alert('Error starting worker: ' + e);
+      }
+    }
+
+    async function stopWorker() {
+      try {
+        const res = await fetch('/api/worker/stop', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+        const d = await res.json();
+        alert(d.message || (d.success ? 'Worker stopped' : 'Failed to stop worker'));
+        pollStatus();
+      } catch (e) {
+        alert('Error stopping worker: ' + e);
+      }
+    }
+
+    async function restartBrowser() {
+      try {
+        const res = await fetch('/api/browser/restart', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+        const d = await res.json();
+        alert(d.message || (d.success ? 'Browser restarted' : 'Failed to restart browser'));
+        pollStatus();
+      } catch (e) {
+        alert('Error restarting browser: ' + e);
+      }
+    }
+
+    async function openBrowserWindow() {
+      try {
+        const res = await fetch('/api/browser/open', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+        const d = await res.json();
+        alert(d.message || 'Browser opened');
+      } catch (e) {
+        alert('Error opening browser: ' + e);
+      }
+    }
+
+    async function checkInstagramLogin() {
+      try {
+        const res = await fetch('/api/browser/check-login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+        const d = await res.json();
+        alert(d.message || `Auth State: ${d.auth_state}`);
+        pollStatus();
+      } catch (e) {
+        alert('Error checking login: ' + e);
       }
     }
 

@@ -9,6 +9,7 @@ from backend.browser.browser_types import (
     BrowserLaunchConfig,
 )
 from backend.browser.exceptions import (
+    BrowserException,
     BrowserLaunchError,
     BrowserCrashError,
     BrowserTimeoutError,
@@ -317,13 +318,24 @@ class PlaywrightBrowserDriver(BrowserDriver):
         self.initialize()
         try:
             self._dispatch(self._raw_launch)
+            if not self.verify_alive():
+                raise BrowserLaunchError("BROWSER_NOT_RESPONSIVE: Browser page failed responsiveness check post-launch")
         except Exception as e:
             self.close()
-            raise BrowserLaunchError(f"Failed to launch browser: {e}") from e
+            if isinstance(e, BrowserException):
+                raise
+            raise BrowserLaunchError(f"BROWSER_LAUNCH_FAILED: {e}") from e
 
     def _raw_launch(self) -> None:
-        from playwright.sync_api import sync_playwright
-        self._playwright = sync_playwright().start()
+        exec_path = self.config.executable_path
+        if exec_path and not os.path.isfile(exec_path):
+            raise BrowserLaunchError(f"BROWSER_EXECUTABLE_NOT_FOUND: Executable not found at {exec_path}")
+
+        try:
+            from playwright.sync_api import sync_playwright
+            self._playwright = sync_playwright().start()
+        except Exception as e:
+            raise BrowserLaunchError(f"PLAYWRIGHT_NOT_INITIALIZED: {e}") from e
 
         b_type = self.config.browser_type.value.lower()
         if b_type in ("chromium", "chrome", "edge"):
@@ -345,7 +357,6 @@ class PlaywrightBrowserDriver(BrowserDriver):
         timeout_ms = self.config.timeout_seconds * 1000
 
         # Auto-detect Chrome executable if executable_path not explicitly specified
-        exec_path = self.config.executable_path
         if not exec_path and b_type == "chrome":
             detected = find_browser_executable()
             if detected:
@@ -361,25 +372,35 @@ class PlaywrightBrowserDriver(BrowserDriver):
         if exec_path and not channel:
             launch_kwargs["executable_path"] = exec_path
 
-        if self.config.profile_directory:
-            self._is_persistent = True
-            launch_kwargs["user_data_dir"] = self.config.profile_directory
-            launch_kwargs["viewport"] = {"width": self.config.viewport_width, "height": self.config.viewport_height}
-            if self.config.user_agent:
-                launch_kwargs["user_agent"] = self.config.user_agent
-            self._context = launcher.launch_persistent_context(**launch_kwargs)
-            pages = self._context.pages
-            self._page = pages[0] if pages else self._context.new_page()
-            self._setup_page_listeners(self._page)
-        else:
-            self._is_persistent = False
-            self._browser = launcher.launch(**launch_kwargs)
-            self._context = self._browser.new_context(
-                viewport={"width": self.config.viewport_width, "height": self.config.viewport_height},
-                user_agent=self.config.user_agent,
-            )
-            self._page = self._context.new_page()
-            self._setup_page_listeners(self._page)
+        try:
+            if self.config.profile_directory:
+                self._is_persistent = True
+                launch_kwargs["user_data_dir"] = self.config.profile_directory
+                launch_kwargs["viewport"] = {"width": self.config.viewport_width, "height": self.config.viewport_height}
+                if self.config.user_agent:
+                    launch_kwargs["user_agent"] = self.config.user_agent
+                self._context = launcher.launch_persistent_context(**launch_kwargs)
+                pages = self._context.pages
+                self._page = pages[0] if pages else self._context.new_page()
+                self._setup_page_listeners(self._page)
+            else:
+                self._is_persistent = False
+                self._browser = launcher.launch(**launch_kwargs)
+                self._context = self._browser.new_context(
+                    viewport={"width": self.config.viewport_width, "height": self.config.viewport_height},
+                    user_agent=self.config.user_agent,
+                )
+                self._page = self._context.new_page()
+                self._setup_page_listeners(self._page)
+        except Exception as e:
+            if "context" in str(e).lower():
+                raise BrowserLaunchError(f"BROWSER_CONTEXT_FAILED: {e}") from e
+            if "page" in str(e).lower():
+                raise BrowserLaunchError(f"BROWSER_PAGE_FAILED: {e}") from e
+            raise BrowserLaunchError(f"BROWSER_LAUNCH_FAILED: {e}") from e
+
+        if not self._page or (hasattr(self._page, "is_closed") and self._page.is_closed()):
+            raise BrowserLaunchError("BROWSER_PAGE_FAILED: Browser page could not be created or was immediately closed")
 
         # Extract and validate underlying browser process PID
         self.pid = None
@@ -399,6 +420,9 @@ class PlaywrightBrowserDriver(BrowserDriver):
                         self.pid_status = "active"
                     else:
                         self.pid_status = "exited"
+                        raise BrowserLaunchError(f"BROWSER_PROCESS_EXITED: PID {self.pid} exited immediately after launch")
+        except BrowserLaunchError:
+            raise
         except Exception:
             self.pid = None
             self.pid_status = "pid_unavailable"

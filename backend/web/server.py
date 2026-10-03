@@ -11,7 +11,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
 
 from backend.bootstrap import ProductionApp
-from backend.domain.enums import SystemState, TaskState, MessageState, WorkerStatus, EventCode
+from backend.domain.enums import SystemState, TaskState, MessageState, WorkerStatus, EventCode, EventLevel, SessionAuthState
 from backend.database.backup import DatabaseBackupService
 from backend.events.logger import get_logger
 
@@ -452,6 +452,141 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 "success": opened,
                 "message": f"Chrome browser opened in new window with Excel link: {target_url}",
             })
+            return
+
+        if path in ("/api/worker/start", "/api/workers/start"):
+            if self.app.worker_manager:
+                try:
+                    w = self.app.worker_manager.start_worker()
+                    if self.app.event_repo:
+                        self.app.event_repo.record(
+                            event_code=EventCode.WORKER_STARTED,
+                            category="worker",
+                            level=EventLevel.INFO,
+                            payload={"worker_id": w.id, "source": "operator_dashboard"}
+                        )
+                    self._send_json(200, {"success": True, "message": f"Worker {w.id} started successfully", "worker_id": w.id})
+                    return
+                except Exception as e:
+                    self._send_json(400, {"success": False, "message": f"Failed to start worker: {e}"})
+                    return
+            self._send_json(500, {"success": False, "message": "WorkerManager not available"})
+            return
+
+        if path in ("/api/worker/stop", "/api/workers/stop"):
+            wid = body.get("worker_id")
+            if self.app.worker_manager:
+                try:
+                    if not wid:
+                        active = [w.id for w in self.app.worker_manager.list_workers() if w.status not in (WorkerStatus.STOPPED, WorkerStatus.CRASHED)]
+                        wid = active[0] if active else None
+                    if wid:
+                        self.app.worker_manager.stop_worker(wid)
+                        if self.app.event_repo:
+                            self.app.event_repo.record(
+                                event_code=EventCode.WORKER_STOPPED,
+                                category="worker",
+                                level=EventLevel.INFO,
+                                payload={"worker_id": wid, "source": "operator_dashboard"}
+                            )
+                        self._send_json(200, {"success": True, "message": f"Worker {wid} stopped successfully"})
+                        return
+                    else:
+                        self._send_json(200, {"success": True, "message": "No active workers to stop"})
+                        return
+                except Exception as e:
+                    self._send_json(400, {"success": False, "message": f"Failed to stop worker: {e}"})
+                    return
+            self._send_json(500, {"success": False, "message": "WorkerManager not available"})
+            return
+
+        if path in ("/api/browser/restart", "/api/sessions/restart"):
+            sid = body.get("session_id")
+            bm = self.app.browser_manager
+            if bm:
+                try:
+                    sess = bm.get_session(sid) if sid else None
+                    if not sess and bm._active_sessions:
+                        sess = next(iter(bm._active_sessions.values()))
+                    if sess:
+                        sess.restart()
+                        if self.app.event_repo:
+                            self.app.event_repo.record(
+                                event_code=EventCode.BROWSER_SESSION_CREATED,
+                                category="browser",
+                                level=EventLevel.INFO,
+                                payload={"session_id": sess.session_id, "action": "restart", "source": "operator_dashboard"}
+                            )
+                        self._send_json(200, {"success": True, "message": f"Browser session {sess.session_id} restarted"})
+                        return
+                    else:
+                        self._send_json(400, {"success": False, "message": "No active browser session found to restart"})
+                        return
+                except Exception as e:
+                    self._send_json(500, {"success": False, "message": f"Failed to restart browser: {e}"})
+                    return
+            self._send_json(500, {"success": False, "message": "BrowserManager not available"})
+            return
+
+        if path in ("/api/browser/check-login", "/api/browser/check-auth", "/api/browser/auth-check"):
+            bm = self.app.browser_manager
+            av = self.app.auth_validator
+            if bm and av:
+                try:
+                    sid = body.get("session_id")
+                    sess = bm.get_session(sid) if sid else None
+                    if not sess and bm._active_sessions:
+                        sess = next(iter(bm._active_sessions.values()))
+                    if sess:
+                        if "instagram.com" not in sess.current_url:
+                            sess.navigate("https://www.instagram.com/")
+                        auth_state, reason = av.check_auth_state(sess)
+                        sess.auth_status = auth_state.value
+                        if self.app.event_repo:
+                            self.app.event_repo.record(
+                                event_code=EventCode.BROWSER_AUTH_CHECKED,
+                                category="browser",
+                                level=EventLevel.INFO,
+                                payload={"session_id": sess.session_id, "auth_state": auth_state.value, "reason": reason}
+                            )
+                        self._send_json(200, {
+                            "success": True,
+                            "auth_state": auth_state.value,
+                            "reason": reason,
+                            "message": f"Instagram Auth State: {auth_state.value} ({reason})"
+                        })
+                        return
+                    else:
+                        self._send_json(400, {"success": False, "message": "No active browser session found"})
+                        return
+                except Exception as e:
+                    self._send_json(500, {"success": False, "message": f"Auth check failed: {e}"})
+                    return
+            self._send_json(500, {"success": False, "message": "Browser or AuthValidator not available"})
+            return
+
+        if path in ("/api/browser/take-screenshot", "/api/browser/capture-screenshot"):
+            bm = self.app.browser_manager
+            if bm:
+                try:
+                    sid = body.get("session_id")
+                    sess = bm.get_session(sid) if sid else None
+                    if not sess and bm._active_sessions:
+                        sess = next(iter(bm._active_sessions.values()))
+                    if sess and hasattr(sess.driver, "screenshot"):
+                        import tempfile
+                        shot_path = os.path.join(tempfile.gettempdir(), f"screenshot_{int(time.time())}.png")
+                        sess.driver.screenshot(shot_path)
+                        sess.screenshot_path = shot_path
+                        self._send_json(200, {"success": True, "screenshot_path": shot_path, "message": "Screenshot captured"})
+                        return
+                    else:
+                        self._send_json(400, {"success": False, "message": "No active session available for screenshot"})
+                        return
+                except Exception as e:
+                    self._send_json(500, {"success": False, "message": f"Screenshot failed: {e}"})
+                    return
+            self._send_json(500, {"success": False, "message": "BrowserManager not available"})
             return
 
         if path == "/api/control/pause":

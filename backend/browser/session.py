@@ -132,7 +132,7 @@ class BrowserSessionInstance:
                 pass
 
     def start(self) -> None:
-        """Start the browser session, following CREATED -> STARTING -> OPEN -> READY lifecycle."""
+        """Start the browser session, following NOT_STARTED -> STARTING -> OPEN -> READY lifecycle."""
         if self.status in (SessionStatus.READY, SessionStatus.BUSY, SessionStatus.ACTIVE):
             return
 
@@ -140,11 +140,25 @@ class BrowserSessionInstance:
         try:
             self.driver.launch(self.config)
             self.transition_to(SessionStatus.OPEN)
+
+            if not self.driver.is_connected():
+                raise BrowserCrashError("Driver failed to connect after launch")
+            if not self.driver.verify_alive():
+                raise BrowserCrashError("Browser page is not responsive after launch")
+
             self.transition_to(SessionStatus.READY)
+            self.current_stage = "READY"
+            self.current_action = "SESSION_READY"
+            try:
+                self.current_url = self.driver.current_url()
+                self.current_title = getattr(self.driver, "title", lambda: "")()
+            except Exception:
+                pass
             self.last_activity_at = utc_now_iso()
             logger.info("Browser session started", session_id=self.session_id, worker_id=self.worker_id)
         except Exception as e:
-            self.handle_browser_crash(reason=f"Session startup failed: {e}")
+            self.transition_to(SessionStatus.RECOVERING, reason=f"Session startup failed: {e}")
+            self.transition_to(SessionStatus.CRASHED, reason=f"Session startup failed: {e}")
             logger.error(f"Failed to start browser session {self.session_id}: {e}")
             if isinstance(e, BrowserException):
                 raise

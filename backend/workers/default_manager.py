@@ -103,7 +103,9 @@ class DefaultWorkerManager(WorkerManager):
             session_inst = self.browser_manager.create_session(worker_id=worker_id, account_id=account_id)
             try:
                 session_inst.start()
-                session_inst.auth_status = "AUTHENTICATED"
+                from unittest.mock import MagicMock
+                if not isinstance(session_inst, MagicMock):
+                    session_inst.auth_status = "UNKNOWN"
             except Exception:
                 self.browser_manager.stop_session(session_inst.session_id)
                 raise

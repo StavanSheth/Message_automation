@@ -48,6 +48,14 @@ def main() -> None:
     res = app.start()
     print(f"Application start result: {res}")
 
+    # Ensure visible browser opens Instagram and evaluates auth state on startup
+    if getattr(app, "interactive_startup_service", None):
+        try:
+            startup_info = app.interactive_startup_service.launch_interactive_session()
+            print(f"Browser Startup: {startup_info.get('status')} | Engine: {startup_info.get('browser_type')} | PID: {startup_info.get('pid')} | Auth: {startup_info.get('auth_status')}")
+        except Exception as ex:
+            logger.warning(f"Interactive browser startup encountered non-fatal error: {ex}")
+
     if not args.once:
         web_server = None
         if not args.no_web:
