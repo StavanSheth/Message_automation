@@ -43,11 +43,13 @@ class SpreadsheetStructureValidator:
                 continue
 
             if normalized in seen_canonical:
-                raise ValidationError(f"Duplicate column detected for field: '{normalized}' (original header '{raw}')")
+                col_key = f"{normalized}_{idx}"
+            else:
+                col_key = normalized
+                seen_canonical.add(normalized)
+                canonical_to_idx[normalized] = idx
 
-            seen_canonical.add(normalized)
-            canonical_to_idx[normalized] = idx
-            idx_to_canonical[idx] = normalized
+            idx_to_canonical[idx] = col_key
 
         # Verify required columns exist (either instagram_url or username)
         if "instagram_url" not in canonical_to_idx and "username" not in canonical_to_idx:

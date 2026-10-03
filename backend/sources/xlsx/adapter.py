@@ -55,7 +55,7 @@ HEADER_ALIASES: Dict[str, str] = {
     "msg": "message",
     "remarks": "remarks",
     "remark": "remarks",
-    "status": "remarks",
+    "status": "status",
     "follow-up 1 message": "followup_1_message",
     "followup 1 message": "followup_1_message",
     "follow up 1 message": "followup_1_message",

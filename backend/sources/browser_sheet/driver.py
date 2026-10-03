@@ -298,6 +298,47 @@ class PlaywrightSpreadsheetDriver:
         if not self._cached_headers or self._current_url != url:
             self.read_headers(url)
 
+        # Check if Excel Online WAC frame is present
+        driver_inst = getattr(self.session, "driver", None)
+        page_obj = getattr(driver_inst, "page", None) or getattr(self.session, "_page", None)
+        wac_frame = page_obj.frame(name="WacFrame_Excel_0") if (page_obj and hasattr(page_obj, "frame")) else None
+
+        if wac_frame:
+            for field_name, new_val in updates.items():
+                normalized_field = normalize_header(field_name) or field_name.lower().strip()
+                col_idx = self._canonical_to_col.get(normalized_field)
+                if col_idx is None:
+                    col_idx = self._canonical_to_col.get(field_name)
+                if col_idx is None:
+                    raise ValidationError(f"Cannot update unknown column '{field_name}'")
+
+                # Convert to Excel column letter
+                def _to_excel_col(idx: int) -> str:
+                    res = ""
+                    idx += 1
+                    while idx > 0:
+                        idx, rem = divmod(idx - 1, 26)
+                        res = chr(65 + rem) + res
+                    return res
+
+                col_letter = _to_excel_col(col_idx)
+                coord = f"{col_letter}{row_index}"
+
+                name_box = wac_frame.query_selector("#FormulaBar-NameBox-input")
+                if name_box:
+                    name_box.click()
+                    name_box.fill(coord)
+                    name_box.press("Enter")
+                    time.sleep(0.5)
+
+                formula_div = wac_frame.query_selector("#formulaBarTextDivId_textElement")
+                if formula_div:
+                    formula_div.click()
+                    formula_div.fill(str(new_val))
+                    formula_div.press("Enter")
+                    time.sleep(0.5)
+            return True
+
         data_tr_idx = row_index - 2
 
         for field_name, new_val in updates.items():

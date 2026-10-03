@@ -231,9 +231,16 @@ class SourceService:
         remarks_lower = ""
         if row.raw_values:
             for k, v in row.raw_values.items():
-                if any(r_key in str(k).lower() for r_key in ("remarks", "remark", "status")):
-                    remarks_lower = str(v).strip().lower()
-                    break
+                if any(r_key in str(k).lower() for r_key in ("remarks", "remark", "followup_1", "follow up 1", "follow-up 1", "status")):
+                    val_str = str(v).strip().lower()
+                    if val_str in ("done", "completed", "sent", "already sent"):
+                        remarks_lower = "done"
+                        break
+                    elif val_str in ("permanently closed", "not reachable", "closed", "invalid", "not applicable", "n/a"):
+                        remarks_lower = "permanently closed"
+                        break
+                    elif not remarks_lower and val_str:
+                        remarks_lower = val_str
 
         if not remarks_lower and row.notes and "remarks:" in row.notes.lower():
             for part in row.notes.split("|"):

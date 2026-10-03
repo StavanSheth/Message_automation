@@ -93,8 +93,8 @@ class SpreadsheetIngestionService:
         message_template: Optional[str] = None,
         driver: Optional[PlaywrightSpreadsheetDriver] = None,
     ) -> Dict[str, Any]:
-        """Import from Google Sheets or web spreadsheet URL."""
-        # Check if Google Sheets
+        """Import from Google Sheets, OneDrive, Excel Online, or web spreadsheet URL."""
+        # 1. Check if Google Sheets direct export is available
         gsheet_match = re.search(r"/spreadsheets/d/([a-zA-Z0-9-_]+)", url)
         if gsheet_match:
             sheet_id = gsheet_match.group(1)
@@ -102,7 +102,6 @@ class SpreadsheetIngestionService:
             gid_part = f"&gid={gid_match.group(1)}" if gid_match else ""
             export_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv{gid_part}"
 
-            # Attempt public export download first
             try:
                 req = urllib.request.Request(
                     export_url,
@@ -121,30 +120,110 @@ class SpreadsheetIngestionService:
                                     message_template=message_template,
                                 )
             except Exception as e:
-                logger.warning(f"Direct Google Sheets export not available ({e}); falling back to browser driver.")
+                logger.warning(f"Direct Google Sheets export not available ({e}); falling back to browser.")
 
-        # Fallback or general web spreadsheet: use BrowserSpreadsheetSource with Playwright driver
+        # 2. General Web Spreadsheet (OneDrive / Excel Online / Google Sheets browser):
+        # Fetch using Playwright browser automation
+        try:
+            logger.info(f"Accessing spreadsheet URL via browser session: {url}")
+            csv_text = self._fetch_via_browser(url)
+            if csv_text and csv_text.strip():
+                return self._import_from_raw_text(
+                    csv_text,
+                    source_name=url,
+                    message_template=message_template,
+                )
+        except Exception as e:
+            logger.warning(f"Browser-based spreadsheet fetch encountered issue: {e}")
+
+        # Fallback to driver if provided
         effective_driver = driver
-        if not effective_driver and self.browser_manager:
+        if effective_driver:
+            adapter = BrowserSpreadsheetSource(spreadsheet_url=url, driver=effective_driver)
+            sync_run = self.source_service.sync_source(adapter)
+            return self._summarize_sync(sync_run)
+
+        raise SourceAccessError(
+            f"Cannot access spreadsheet at '{url}'. The spreadsheet is either private or requires browser authentication. "
+            "Ensure the sharing link is set to 'Anyone with the link can view' or open via browser.",
+            code="SOURCE_UNAVAILABLE",
+        )
+
+    def _fetch_via_browser(self, url: str) -> str:
+        """
+        Use Playwright browser session to open web spreadsheets (OneDrive, Excel Online, Google Sheets)
+        and retrieve CSV data directly via real browser automation.
+        """
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page()
             try:
-                # Use default session from browser manager if available
-                session = self.browser_manager.get_session("DEFAULT") or self.browser_manager.start_session("SPREADSHEET_IMPORT")
-                if session:
-                    effective_driver = PlaywrightSpreadsheetDriver(session=session)
-            except Exception as e:
-                logger.warning(f"Could not initialize browser session for spreadsheet: {e}")
+                page.goto(url, wait_until="networkidle", timeout=35000)
+            except Exception:
+                page.wait_for_timeout(4000)
 
-        if not effective_driver:
-            # Raise clear actionable error
-            raise SourceAccessError(
-                f"Cannot access spreadsheet at '{url}'. The Google Sheet is either private or requires browser access. "
-                "Ensure the sheet link sharing is set to 'Anyone with the link can view' or start the browser agent.",
-                code="SOURCE_UNAVAILABLE",
-            )
+            page.wait_for_timeout(5000)
 
-        adapter = BrowserSpreadsheetSource(spreadsheet_url=url, driver=effective_driver)
-        sync_run = self.source_service.sync_source(adapter)
-        return self._summarize_sync(sync_run)
+            # Check if Excel Online WAC frame is present
+            frame = page.frame(name="WacFrame_Excel_0")
+            if not frame:
+                for f in page.frames:
+                    if "officeapps.live.com" in f.url or "xlviewer" in f.url:
+                        frame = f
+                        break
+
+            if frame:
+                try:
+                    # Click File menu -> Export -> Download as CSV
+                    file_btn = frame.query_selector("#FileMenuFlyoutLauncher") or frame.query_selector("text=File")
+                    if file_btn:
+                        file_btn.click()
+                        page.wait_for_timeout(1000)
+
+                    export_btn = frame.query_selector("text=Export")
+                    if export_btn:
+                        export_btn.click()
+                        page.wait_for_timeout(1500)
+
+                    csv_dl_btn = frame.query_selector("text=Download as CSV") or frame.query_selector("text=Download as CSV UTF-8")
+                    if csv_dl_btn:
+                        with page.expect_download(timeout=15000) as download_info:
+                            csv_dl_btn.click()
+                        download = download_info.value
+                        os.makedirs("data", exist_ok=True)
+                        dest_path = os.path.join("data", "imported_excel.csv")
+                        download.save_as(dest_path)
+                        with open(dest_path, "r", encoding="utf-8-sig", errors="replace") as f:
+                            csv_content = f.read()
+                        browser.close()
+                        return csv_content
+                except Exception as e:
+                    logger.warning(f"Excel Online export failed via frame: {e}")
+
+            # Fallback to extracting table or grid text from DOM
+            all_frames = [page] + list(page.frames)
+            for f in all_frames:
+                try:
+                    tables = f.evaluate("""() => {
+                        const trs = Array.from(document.querySelectorAll('table tr'));
+                        if (trs.length > 1) {
+                            return trs.map(tr => Array.from(tr.querySelectorAll('th, td')).map(c => (c.innerText || '').trim()).join('\\t')).join('\\n');
+                        }
+                        const rows = Array.from(document.querySelectorAll('[role="row"]'));
+                        if (rows.length > 1) {
+                            return rows.map(r => Array.from(r.querySelectorAll('[role="gridcell"], [role="columnheader"]')).map(c => (c.innerText || '').trim()).join('\\t')).join('\\n');
+                        }
+                        return '';
+                    }""")
+                    if tables and ("instagram" in tables.lower() or "client" in tables.lower() or "industry" in tables.lower()):
+                        browser.close()
+                        return tables
+                except Exception:
+                    continue
+
+            browser.close()
+            raise SourceAccessError(f"Could not extract spreadsheet data from browser session for '{url}'")
 
     def _import_from_file(self, file_path: str, message_template: Optional[str] = None) -> Dict[str, Any]:
         """Import from local .xlsx or .csv file."""
@@ -178,12 +257,26 @@ class SpreadsheetIngestionService:
         if not raw_rows:
             raise ValidationError("Could not parse any rows from spreadsheet input.")
 
-        # Extract headers and validate
-        header_row = [str(c).strip() for c in raw_rows[0]]
-        canonical_map, col_map = SpreadsheetStructureValidator.validate_headers(header_row)
+        # Extract headers and validate, scanning first 5 rows to skip title banners if needed
+        canonical_map = None
+        col_map = None
+        header_idx = 0
+        for i in range(min(5, len(raw_rows))):
+            cand = [str(c).strip() for c in raw_rows[i]]
+            try:
+                canonical_map, col_map = SpreadsheetStructureValidator.validate_headers(cand)
+                header_idx = i
+                break
+            except Exception:
+                continue
+
+        if not canonical_map or not col_map:
+            # Fallback to validating the first row so detailed error is raised
+            header_row = [str(c).strip() for c in raw_rows[0]]
+            canonical_map, col_map = SpreadsheetStructureValidator.validate_headers(header_row)
 
         source_rows: List[SourceRow] = []
-        for idx, row_cells in enumerate(raw_rows[1:], start=2):
+        for idx, row_cells in enumerate(raw_rows[header_idx + 1:], start=header_idx + 2):
             parsed = SpreadsheetStructureValidator.parse_row(
                 row_cells=row_cells,
                 row_index=idx,
@@ -202,6 +295,7 @@ class SpreadsheetIngestionService:
         adapter = IngestedListSource(source_identifier=source_name, rows=source_rows)
         sync_run = self.source_service.sync_source(adapter)
         return self._summarize_sync(sync_run)
+
 
     def _summarize_sync(self, sync_run: Any) -> Dict[str, Any]:
         """Calculate counts of tasks created in READY, COMPLETED, and SKIPPED states."""
