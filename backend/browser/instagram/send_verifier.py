@@ -124,3 +124,14 @@ class InstagramSendVerifier:
             "found_text": None,
             "reason": "message_text_not_found_in_thread",
         }
+
+    def verify_send(
+        self,
+        session: BrowserSessionInstance,
+        expected_text: str,
+        expected_username: Optional[str] = None,
+    ) -> tuple[bool, str, Dict[str, Any]]:
+        """Convenience wrapper returning (is_confirmed, reason, result_dict)."""
+        res = self.verify_sent_message(session, expected_text, expected_username)
+        return bool(res.get("confirmed")), str(res.get("reason")), res
+

@@ -117,6 +117,32 @@ class BrowserDriver(ABC):
         except Exception:
             return False
 
+    def title(self) -> str:
+        """Return the title of the active page."""
+        try:
+            return str(self.evaluate("document.title") or "")
+        except Exception:
+            return ""
+
+    def is_alive(self) -> bool:
+        """Check if browser process and connection are alive."""
+        return self.is_connected()
+
+    def take_screenshot(self) -> bytes:
+        """Capture screenshot returning raw PNG bytes."""
+        import tempfile
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+                tmp_path = tmp.name
+            self.screenshot(tmp_path)
+            with open(tmp_path, "rb") as f:
+                data = f.read()
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+            return data
+        except Exception:
+            return b""
+
 
 import queue
 import threading
@@ -165,6 +191,7 @@ class PlaywrightBrowserDriver(BrowserDriver):
         self._stop_event = threading.Event()
         self._console_errors: List[str] = []
         self._network_failures: List[Dict[str, Any]] = []
+        self.pid: Optional[int] = None
 
     def initialize(self) -> None:
         """Deterministic startup stage 1: initialize worker thread."""
@@ -314,7 +341,22 @@ class PlaywrightBrowserDriver(BrowserDriver):
             self._page = self._context.new_page()
             self._setup_page_listeners(self._page)
 
-        logger.info("Playwright browser launched successfully", browser_type=b_type)
+        # Extract underlying browser process PID
+        try:
+            conn = None
+            if self._context and hasattr(self._context, "_impl_obj"):
+                conn = getattr(self._context._impl_obj, "_connection", None)
+            if not conn and self._browser and hasattr(self._browser, "_impl_obj"):
+                conn = getattr(self._browser._impl_obj, "_connection", None)
+            if conn:
+                transport = getattr(conn, "_transport", None)
+                proc = getattr(transport, "_proc", None)
+                if proc and hasattr(proc, "pid"):
+                    self.pid = proc.pid
+        except Exception:
+            self.pid = None
+
+        logger.info("Playwright browser launched successfully", browser_type=b_type, pid=self.pid)
 
     def create_context(self, profile_path: Optional[str] = None) -> None:
         """Deterministic startup stage 3: create context."""
@@ -540,3 +582,5 @@ class PlaywrightBrowserDriver(BrowserDriver):
             except Exception:
                 pass
             self._playwright = None
+
+        self.pid = None

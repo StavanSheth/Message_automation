@@ -52,9 +52,18 @@ class PageStatus(str, Enum):
     CLOSED = "CLOSED"
 
 
+class BrowserEngine(str, Enum):
+    PLAYWRIGHT_CHROMIUM = "playwright_chromium"
+    SYSTEM_CHROME = "system_chrome"
+    SYSTEM_EDGE = "system_edge"
+    FIREFOX = "firefox"
+    WEBKIT = "webkit"
+
+
 @dataclass
 class BrowserLaunchConfig:
     browser_type: BrowserType = BrowserType.CHROMIUM
+    browser_engine: BrowserEngine = BrowserEngine.PLAYWRIGHT_CHROMIUM
     headless: bool = True
     timeout_seconds: int = 30
     profile_directory: Optional[str] = None
@@ -89,3 +98,15 @@ class BrowserSessionInfo:
     last_activity_at: str = field(default_factory=utc_now_iso)
     current_url: Optional[str] = None
     pid: Optional[int] = None
+    account_id: Optional[str] = None
+    browser_pid: Optional[int] = None
+    profile_path: Optional[str] = None
+    current_title: Optional[str] = None
+    current_stage: Optional[str] = None
+    current_action: Optional[str] = None
+    last_action: Optional[str] = None
+    last_action_timestamp: Optional[str] = None
+    auth_status: Optional[str] = None
+    health: Optional[str] = None
+    last_error: Optional[str] = None
+    screenshot_path: Optional[str] = None

@@ -380,20 +380,63 @@ def restart_app(args) -> None:
 
 def browser_command(args) -> None:
     """Inspect browser driver or launch isolated visible session for verification."""
-    from backend.browser.driver import find_browser_executable, PlaywrightBrowserDriver
+    from backend.browser.runtime import BrowserRuntimeValidator
+    from backend.browser.driver import PlaywrightBrowserDriver
     from backend.browser.browser_types import BrowserLaunchConfig, BrowserType
-    print("Detected Browser Executable:", find_browser_executable() or "Playwright default Chromium")
-    if args.launch:
-        print("Launching visible verification browser session...")
-        cfg = BrowserLaunchConfig(browser_type=BrowserType.CHROMIUM, headless=False)
+
+    diag = BrowserRuntimeValidator.validate_runtime()
+    print("=== Browser Runtime Diagnostics ===")
+    print(f"Playwright Installed: {'YES' if diag.playwright_installed else 'NO'}")
+    print(f"Browser Engine: {diag.resolved_engine}")
+    print(f"Executable Found: {'YES' if diag.executable_exists else 'NO'} ({diag.executable_path or 'Default Playwright Chromium'})")
+    print(f"Can Launch: {'YES' if diag.can_launch else 'NO'}")
+    if diag.actionable_fix:
+        print(f"Diagnostic Action Required: {diag.actionable_fix}")
+    elif diag.error_message:
+        print(f"Diagnostic Error: {diag.error_message}")
+
+    if getattr(args, "smoke_test", False):
+        print("\n--- Running Browser Smoke Test ---")
+        cfg = BrowserLaunchConfig(
+            browser_type=BrowserType.CHROMIUM,
+            headless=getattr(args, "headless", False),
+            executable_path=diag.executable_path,
+        )
         driver = PlaywrightBrowserDriver(cfg)
         driver.launch()
-        print("Browser launched successfully. Current URL:", driver.current_url())
-        driver.navigate("https://www.instagram.com")
-        print("Navigated to Instagram. Waiting 5 seconds before closing...")
-        time.sleep(5.0)
+        pid = driver.pid
+        print(f"Browser launched. PID: {pid}. Initial URL: {driver.current_url()}")
+        driver.navigate(getattr(args, "url", "https://www.instagram.com"))
+        print(f"Navigated to: {driver.current_url()} (Title: {driver.title()})")
+        screenshot = driver.take_screenshot()
+        print(f"Smoke test verification complete. Screenshot captured ({len(screenshot)} bytes). Closing cleanly...")
         driver.close()
-        print("Browser session closed cleanly.")
+        print("Browser smoke test passed successfully.")
+        return
+
+    if getattr(args, "launch", False):
+        print("\n--- Launching Persistent Browser Session ---")
+        cfg = BrowserLaunchConfig(
+            browser_type=BrowserType.CHROMIUM,
+            headless=getattr(args, "headless", False),
+            executable_path=diag.executable_path,
+        )
+        driver = PlaywrightBrowserDriver(cfg)
+        driver.launch()
+        pid = driver.pid
+        print(f"Browser successfully launched (PID: {pid}).")
+        driver.navigate(getattr(args, "url", "https://www.instagram.com"))
+        print(f"Navigated to {driver.current_url()}.")
+        print("Browser session is LIVE. It will remain open until you press Ctrl+C or stop the process.")
+        try:
+            while driver.is_alive():
+                time.sleep(1.0)
+        except KeyboardInterrupt:
+            print("\nShutdown signal received from operator.")
+        finally:
+            print("Closing browser cleanly...")
+            driver.close()
+            print("Browser closed.")
 
 
 def worker_command(db_path: Optional[str] = None) -> None:
@@ -468,7 +511,10 @@ def main() -> None:
 
     # browser
     browser_p = subparsers.add_parser("browser", help="Inspect or launch browser")
-    browser_p.add_argument("--launch", action="store_true", help="Launch visible test browser")
+    browser_p.add_argument("--launch", action="store_true", help="Launch persistent visible browser session (stays open until stopped)")
+    browser_p.add_argument("--smoke-test", action="store_true", help="Run automated visible smoke test and cleanly exit")
+    browser_p.add_argument("--headless", action="store_true", default=False, help="Run in headless mode")
+    browser_p.add_argument("--url", type=str, default="https://www.instagram.com", help="Initial URL to navigate to")
 
     # worker
     worker_p = subparsers.add_parser("worker", help="Inspect worker states and task leases")

@@ -236,6 +236,10 @@ class BrowserManager:
             self._worker_session_map.pop(worker_id, None)
         return None
 
+    def list_sessions(self) -> List[BrowserSessionInfo]:
+        """Return list of active browser session observation models."""
+        return [session.to_info() for session in self._active_sessions.values()]
+
     def stop_session(self, session_id: str) -> None:
         """Stop session, unregister lifecycle, and clean up worker mappings. Idempotent."""
         session = self._active_sessions.pop(session_id, None)

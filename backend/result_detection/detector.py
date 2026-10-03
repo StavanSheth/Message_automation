@@ -1,7 +1,7 @@
 """Result detector contract and safe outcome classification."""
 
 from abc import ABC, abstractmethod
-from typing import Dict, Any
+from typing import Dict, Any, Optional, Tuple
 from backend.domain.enums import ErrorCode
 
 
@@ -60,3 +60,56 @@ class DefaultResultDetector(ResultDetector):
 
         # Default unknown state must always be safe (never interpreted as success)
         return ResultCode.UNKNOWN
+
+
+class VisionResultDetector(ResultDetector):
+    """
+    Combines direct DOM flags with the vision/OCR pipeline to classify outcomes.
+    Fails closed to ResultCode.UNKNOWN if vision confidence is below threshold.
+    """
+
+    def __init__(self, vision_pipeline: Optional[Any] = None, confidence_threshold: float = 0.85):
+        from backend.vision.ocr import VisionPipeline
+        self.pipeline = vision_pipeline or VisionPipeline(confidence_threshold=confidence_threshold)
+        self.default_detector = DefaultResultDetector()
+
+    def detect_result(self, browser_state: Dict[str, Any]) -> str:
+        code, _conf, _reason = self.detect_with_confidence(browser_state)
+        return code
+
+    def detect_with_confidence(self, browser_state: Dict[str, Any]) -> tuple[str, float, str]:
+        if not browser_state:
+            return ResultCode.UNKNOWN, 0.0, "empty_browser_state"
+
+        # 1. First check explicit strong DOM flags
+        dom_result = self.default_detector.detect_result(browser_state)
+        if dom_result != ResultCode.UNKNOWN:
+            return dom_result, 1.0, "dom_detection"
+
+        # 2. If screenshot path is provided, process through vision pipeline
+        screenshot_path = browser_state.get("screenshot_path") or browser_state.get("image_path")
+        if screenshot_path:
+            region = browser_state.get("region")
+            target_phrases = browser_state.get("target_phrases")
+            ocr_engine = browser_state.get("ocr_engine")
+            res = self.pipeline.process(
+                image_path=screenshot_path,
+                region=region,
+                target_phrases=target_phrases,
+                ocr_engine=ocr_engine,
+            )
+            # Map classification string to ResultCode
+            if res.status == "PASS" and res.classification == "SUCCESS":
+                return ResultCode.SUCCESS, res.confidence, res.reason
+            elif res.classification == "CHALLENGE_REQUIRED":
+                return ResultCode.CHALLENGE_REQUIRED, res.confidence, res.reason
+            elif res.classification == "PROFILE_NOT_FOUND":
+                return ResultCode.PROFILE_NOT_FOUND, res.confidence, res.reason
+            elif res.classification == "LOGIN_REQUIRED":
+                return ResultCode.LOGIN_REQUIRED, res.confidence, res.reason
+            elif res.classification == "DM_NOT_AVAILABLE":
+                return ResultCode.DM_NOT_AVAILABLE, res.confidence, res.reason
+            else:
+                return ResultCode.UNKNOWN, res.confidence, res.reason
+
+        return ResultCode.UNKNOWN, 0.0, "no_detection_signals"

@@ -188,3 +188,5 @@ class InstagramProfileReader:
             "can_message": bool(raw_data.get("can_message", False)),
             "page_missing": bool(raw_data.get("page_missing", False)),
         }
+
+    read_profile = extract_profile

@@ -13,6 +13,27 @@ logger = get_logger("instagram_message_composer")
 class InstagramMessageComposer:
     """Interacts with Instagram browser DOM to open DM interface and enter message text."""
 
+    @staticmethod
+    def compose(
+        template: str,
+        contact_name: Optional[str] = None,
+        contact_username: Optional[str] = None,
+    ) -> str:
+        """Render template placeholders into validated message body."""
+        if not template or not isinstance(template, str) or not template.strip():
+            raise AutomationError(code=ErrorCode.INVALID_DATA, message="Message template cannot be empty")
+        body = template
+        if contact_name:
+            body = body.replace("{{name}}", contact_name).replace("{name}", contact_name)
+        if contact_username:
+            body = body.replace("{{username}}", contact_username).replace("{username}", contact_username)
+        body = body.strip()
+        if not body:
+            raise AutomationError(code=ErrorCode.INVALID_DATA, message="Message body cannot be whitespace-only")
+        if len(body) > 1000:
+            raise AutomationError(code=ErrorCode.INVALID_DATA, message=f"Message body exceeds 1000 chars ({len(body)})")
+        return body
+
     def open_message_dialog(self, session: BrowserSessionInstance, timeout_ms: int = 15000) -> Dict[str, Any]:
         """
         Locate and click the 'Message' action button on target profile to open DM conversation.

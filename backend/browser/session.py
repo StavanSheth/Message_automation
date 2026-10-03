@@ -56,11 +56,49 @@ class BrowserSessionInstance:
             profile_directory=profile_path,
         )
         self.driver: BrowserDriver = driver or PlaywrightBrowserDriver(self.config)
-        self.status: SessionStatus = SessionStatus.NOT_STARTED
+        self.status: SessionStatus = (
+            SessionStatus.READY if (driver and driver.is_connected()) else SessionStatus.NOT_STARTED
+        )
         self.auth_status: Optional[str] = None
         self.created_at: str = utc_now_iso()
         self.last_activity_at: str = self.created_at
         self.current_url: str = ""
+        self.current_title: str = ""
+        self.current_stage: str = "INITIALIZED"
+        self.current_action: str = "IDLE"
+        self.last_action: str = ""
+        self.last_action_timestamp: str = self.created_at
+        self.last_error: Optional[str] = None
+        self.screenshot_path: Optional[str] = None
+
+    def update_action(
+        self,
+        stage: str,
+        action: str,
+        error: Optional[str] = None,
+        screenshot_path: Optional[str] = None,
+        url: Optional[str] = None,
+    ) -> None:
+        """Update live observation model for dashboard/API inspection."""
+        now_iso = utc_now_iso()
+        self.last_action = self.current_action
+        self.current_stage = stage
+        self.current_action = action
+        self.last_action_timestamp = now_iso
+        self.last_activity_at = now_iso
+        if url:
+            self.current_url = url
+        if error:
+            self.last_error = error
+        if screenshot_path:
+            self.screenshot_path = screenshot_path
+        if self.is_alive():
+            try:
+                if not url:
+                    self.current_url = self.driver.current_url()
+                self.current_title = getattr(self.driver, "title", lambda: "")()
+            except Exception:
+                pass
 
     def start(self) -> None:
         """Start the browser session."""
@@ -226,14 +264,27 @@ class BrowserSessionInstance:
             )
 
     def to_info(self) -> BrowserSessionInfo:
+        p_pid = getattr(self.driver, "pid", None)
         return BrowserSessionInfo(
             session_id=self.session_id,
             worker_id=self.worker_id,
+            account_id=self.account_id,
             browser_type=self.browser_type,
             profile_id=self.profile_id,
             status=self.status,
             created_at=self.created_at,
             last_activity_at=self.last_activity_at,
             current_url=self.current_url,
-            pid=getattr(self.driver, "pid", None),
+            pid=p_pid,
+            browser_pid=p_pid,
+            profile_path=self.profile_path,
+            current_title=self.current_title,
+            current_stage=self.current_stage,
+            current_action=self.current_action,
+            last_action=self.last_action,
+            last_action_timestamp=self.last_action_timestamp,
+            auth_status=self.auth_status,
+            health="HEALTHY" if self.is_alive() else self.status.value,
+            last_error=self.last_error,
+            screenshot_path=self.screenshot_path,
         )

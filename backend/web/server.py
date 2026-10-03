@@ -520,9 +520,17 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         # 4. Accounts Breakdown
         accounts_list = []
         try:
-            cur = conn.execute("SELECT id, username, status, created_at, updated_at FROM accounts LIMIT 10;")
+            cur = conn.execute(
+                "SELECT id, username, status, assigned_worker_id, daily_send_limit, daily_sends_count FROM accounts LIMIT 20;"
+            )
             for row in cur.fetchall():
                 acc_id = row[0]
+                acc_username = row[1]
+                acc_status = row[2]
+                assigned_worker = row[3] or "—"
+                daily_limit = row[4] or getattr(self.app.settings, "daily_send_limit", 50)
+                daily_sends = row[5] or 0
+
                 # Check cooldown
                 is_cooldown = False
                 cd_reason = ""
@@ -532,47 +540,87 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                         is_cooldown = True
                         cd_reason = cd.reason
 
+                # Determine auth status from account and active browser session
+                auth_status = "UNKNOWN"
+                if acc_status == "ACTIVE":
+                    auth_status = "AUTHENTICATED"
+                elif acc_status in ("CHALLENGED", "SUSPENDED", "BANNED"):
+                    auth_status = acc_status
+
+                if self.app.browser_manager:
+                    for s in self.app.browser_manager._active_sessions.values():
+                        if getattr(s, "account_id", None) == acc_id and hasattr(s, "auth_status"):
+                            auth_status = s.auth_status.value if hasattr(s.auth_status, "value") else str(s.auth_status)
+                            break
+
                 accounts_list.append({
                     "id": acc_id,
-                    "username": row[1],
-                    "status": row[2],
-                    "auth_status": "Valid",
-                    "worker_id": "WKR-01",
+                    "username": acc_username,
+                    "status": acc_status,
+                    "auth_status": auth_status,
+                    "worker_id": assigned_worker,
                     "rate_status": "Cooldown" if is_cooldown else "Available",
-                    "daily_limit": 50,
-                    "sends_today": 0,
+                    "daily_limit": daily_limit,
+                    "sends_today": daily_sends,
                     "cooldown_reason": cd_reason,
                 })
-        except Exception:
-            pass
-
-        if not accounts_list:
-            accounts_list = [
-                {"id": "acc-1", "username": "@default_acc", "status": "ACTIVE", "auth_status": "Valid", "worker_id": "WKR-01", "rate_status": "Available", "daily_limit": 50, "sends_today": 0},
-            ]
+        except Exception as e:
+            logger.debug(f"Accounts query error: {e}")
 
         # 5. Browser Sessions
         sessions_list = []
-        try:
-            cur = conn.execute("SELECT id, worker_id, account_id, profile_path, status, started_at, closed_at FROM browser_sessions ORDER BY started_at DESC LIMIT 6;")
-            for row in cur.fetchall():
+        active_session_ids = set()
+        if self.app.browser_manager:
+            for s in self.app.browser_manager.list_sessions():
+                active_session_ids.add(s.session_id)
+                health_val = s.health.status.value if hasattr(s.health, "status") and hasattr(s.health.status, "value") else str(getattr(s.health, "status", "UNKNOWN"))
+                auth_val = s.auth_status.value if hasattr(s.auth_status, "value") else str(s.auth_status)
+                status_val = s.status.value if hasattr(s.status, "value") else str(s.status)
                 sessions_list.append({
-                    "id": row[0],
-                    "worker_id": row[1] or "—",
-                    "account_id": row[2] or "@default_acc",
-                    "profile_path": row[3],
-                    "status": row[4],
-                    "browser_state": "HEALTHY" if row[4] in ("OPEN", "ACTIVE", "READY") else "CLOSED",
-                    "auth_state": "VALID",
-                    "started_at": row[5],
+                    "id": s.session_id,
+                    "worker_id": s.worker_id or "—",
+                    "account_id": s.account_id or "—",
+                    "profile_path": s.profile_path or "—",
+                    "status": status_val,
+                    "browser_state": health_val,
+                    "auth_state": auth_val,
+                    "browser_pid": s.browser_pid,
+                    "current_url": s.current_url,
+                    "current_title": s.current_title,
+                    "current_stage": s.current_stage,
+                    "current_action": s.current_action,
+                    "last_action": s.last_action,
+                    "last_action_timestamp": s.last_action_timestamp,
+                    "started_at": "Active",
                 })
-        except Exception:
-            pass
 
-        if not sessions_list:
-            sessions_list = [
-                {"id": "SESS-01", "worker_id": "WKR-01", "account_id": "@default_acc", "status": "ACTIVE", "browser_state": "HEALTHY", "auth_state": "VALID", "started_at": "Today"},
-            ]
+        try:
+            cur = conn.execute(
+                "SELECT id, worker_id, account_id, profile_path, status, started_at, closed_at FROM browser_sessions ORDER BY started_at DESC LIMIT 10;"
+            )
+            for row in cur.fetchall():
+                sess_id = row[0]
+                if sess_id not in active_session_ids:
+                    st = row[4]
+                    sessions_list.append({
+                        "id": sess_id,
+                        "worker_id": row[1] or "—",
+                        "account_id": row[2] or "—",
+                        "profile_path": row[3] or "—",
+                        "status": st,
+                        "browser_state": "HEALTHY" if st in ("OPEN", "ACTIVE", "READY") else "CLOSED",
+                        "auth_state": "UNKNOWN",
+                        "browser_pid": None,
+                        "current_url": None,
+                        "current_title": None,
+                        "current_stage": "CLOSED" if st == "CLOSED" else "IDLE",
+                        "current_action": None,
+                        "last_action": None,
+                        "last_action_timestamp": None,
+                        "started_at": row[5] or "—",
+                    })
+        except Exception as e:
+            logger.debug(f"Sessions query error: {e}")
 
         # 6. Safety & Reconciliations
         reconciliations_list = []
@@ -656,7 +704,7 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         except Exception:
             pass
 
-        last_backup_time = "Today 02:30"
+        last_backup_time = "No backup recorded"
         try:
             backup_dir = Path("data/backups")
             if backup_dir.exists():
@@ -801,10 +849,10 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             "environment": "LOCAL",
             "kpis": {
                 "system": {"state": state_val, "desc": "Healthy" if state_val == "RUNNING" else state_val},
-                "workers": {"active": worker_summary["active"], "total": max(worker_summary["total"], 1), "desc": "Healthy"},
-                "accounts": {"active": len(accounts_list), "total": len(accounts_list), "desc": "Active"},
+                "workers": {"active": worker_summary["active"], "total": max(worker_summary["total"], 1), "desc": "Healthy" if worker_summary.get("crashed", 0) == 0 and worker_summary.get("degraded", 0) == 0 else "Degraded"},
+                "accounts": {"active": len([a for a in accounts_list if a.get("status") == "ACTIVE"]), "total": len(accounts_list), "desc": "Active" if any(a.get("status") == "ACTIVE" for a in accounts_list) else "None"},
                 "queue": {"ready": ready_count, "running": running_count, "desc": "Ready"},
-                "sent_today": {"count": completed_count, "trend": "+100%"},
+                "sent_today": {"count": completed_count, "trend": f"{completed_count} verified"},
                 "attention": {"count": len(attention_items), "desc": "Required" if attention_items else "None"},
             },
             "pipeline": pipeline_stages,
@@ -834,7 +882,7 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 "ready_tasks": ready_count,
                 "eligible_tasks": max(0, ready_count - len(cooldowns_list)),
                 "blocked_tasks": len(cooldowns_list),
-                "last_dispatch": datetime.now(timezone.utc).strftime("%H:%M:%S"),
+                "last_dispatch": getattr(self.app.scheduler, "last_dispatch_at", None) or "Never",
             },
             "database": {
                 "engine": "SQLite",

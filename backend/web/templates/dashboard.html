@@ -1041,7 +1041,7 @@
         <div class="kpi-card" onclick="location.href='#tasks'">
           <div class="kpi-label">Sent Today</div>
           <div class="kpi-num" id="kpiSent">0</div>
-          <div class="kpi-sub"><span style="color: var(--emerald);">+100% verified</span></div>
+          <div class="kpi-sub"><span id="kpiSentSub" style="color: var(--emerald);">0 verified</span></div>
         </div>
         <div class="kpi-card" onclick="location.href='#attention'">
           <div class="kpi-label">Attention</div>
@@ -1767,6 +1767,7 @@
         document.getElementById('kpiQueue').innerText = (kpis.queue?.ready || 0) + (kpis.queue?.running || 0);
         document.getElementById('kpiQueueSub').innerText = `${kpis.queue?.ready || 0} ready`;
         document.getElementById('kpiSent').innerText = kpis.sent_today?.count || 0;
+        document.getElementById('kpiSentSub').innerText = kpis.sent_today?.trend || `${kpis.sent_today?.count || 0} verified`;
         document.getElementById('kpiAttention').innerText = kpis.attention?.count || 0;
         document.getElementById('kpiAttentionSub').innerText = kpis.attention?.desc || 'None';
 
@@ -1986,11 +1987,15 @@
 
     function renderAccounts(accounts) {
       const tbody = document.getElementById('accountsTbody');
+      if (!accounts || accounts.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--text-muted);padding:1rem;">No accounts configured</td></tr>';
+        return;
+      }
       tbody.innerHTML = accounts.map(a => `
         <tr>
           <td><strong>${a.username || a.id}</strong></td>
-          <td><span style="color: var(--emerald); font-weight: 600;">&bull; ${a.auth_status || 'Valid'}</span></td>
-          <td>${a.worker_id || 'WKR-01'}</td>
+          <td><span style="color: ${a.auth_status === 'AUTHENTICATED' || a.auth_status === 'Valid' ? 'var(--emerald)' : 'var(--amber)'}; font-weight: 600;">&bull; ${a.auth_status || 'UNKNOWN'}</span></td>
+          <td>${a.worker_id || '—'}</td>
           <td><span class="badge-status status-${a.rate_status === 'Available' ? 'COMPLETED' : 'RUNNING'}">${a.rate_status}</span></td>
           <td style="font-family: 'JetBrains Mono', monospace;">${a.sends_today || 0} / ${a.daily_limit || 50}</td>
         </tr>
@@ -1999,13 +2004,17 @@
 
     function renderSessions(sessions) {
       const tbody = document.getElementById('sessionsTbody');
+      if (!sessions || sessions.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--text-muted);padding:1rem;">No browser sessions recorded</td></tr>';
+        return;
+      }
       tbody.innerHTML = sessions.map(s => `
         <tr>
           <td style="font-family: 'JetBrains Mono', monospace; font-weight: 600;">${s.id}</td>
           <td>${s.worker_id || '—'}</td>
-          <td>${s.account_id || '@default_acc'}</td>
-          <td><span class="badge-status status-${s.browser_state === 'HEALTHY' ? 'COMPLETED' : 'FAILED'}">${s.browser_state}</span></td>
-          <td style="color: var(--emerald);">&bull; ${s.auth_state}</td>
+          <td>${s.account_id || '—'}</td>
+          <td><span class="badge-status status-${s.browser_state === 'HEALTHY' || s.browser_state === 'READY' || s.browser_state === 'OPEN' ? 'COMPLETED' : 'FAILED'}">${s.browser_state}</span></td>
+          <td style="color: ${s.auth_state === 'AUTHENTICATED' || s.auth_state === 'VALID' ? 'var(--emerald)' : 'var(--text-muted)'};">&bull; ${s.auth_state || 'UNKNOWN'}</td>
         </tr>
       `).join('');
     }

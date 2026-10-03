@@ -90,6 +90,7 @@ class Scheduler:
 
         self.is_paused: bool = False
         self.is_running: bool = False
+        self.last_dispatch_at: Optional[str] = None
 
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
@@ -220,6 +221,7 @@ class Scheduler:
         if self.task_dispatcher:
             try:
                 self.task_dispatcher.dispatch_ready_tasks()
+                self.last_dispatch_at = now_iso
             except Exception as e:
                 logger.warning(f"Error dispatching tasks via TaskDispatcher: {e}")
 
