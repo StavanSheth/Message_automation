@@ -454,6 +454,14 @@ class InstagramAutomationService:
 
         dialog_res = self.composer.open_message_dialog(session)
         if not dialog_res.get("success"):
+            if dialog_res.get("blocked") or dialog_res.get("reason") in ("dm_blocked_by_recipient", "dm_not_available"):
+                logger.warning(f"Direct messaging blocked by recipient for contact {contact.id}")
+                self._record_error(
+                    current_task, ErrorCode.DM_NOT_AVAILABLE, "Direct messaging blocked or restricted by recipient", retryable=False, worker_id=worker_id
+                )
+                self.message_repo.update_status(message_record.id, MessageState.SKIPPED)
+                self.task_repo.update_state(current_task.id, TaskState.SKIPPED, worker_id=worker_id)
+                return False
             self._record_error(
                 current_task, ErrorCode.DM_NOT_AVAILABLE, "Failed to open message dialog", retryable=True, worker_id=worker_id
             )
@@ -532,7 +540,16 @@ class InstagramAutomationService:
                     self.task_repo.update_state(current_task.id, TaskState.MANUAL_REVIEW, worker_id=worker_id, enforce_transition=False)
                 return False
             else:
-                # Activate rate-limit cooldown if send was blocked
+                # If recipient blocked DM, mark as SKIPPED rather than generic failure
+                if err_code == ErrorCode.DM_NOT_AVAILABLE or send_res.get("reason") == "dm_not_available":
+                    self._record_error(
+                        current_task, ErrorCode.DM_NOT_AVAILABLE, "Recipient does not allow direct messages", retryable=False, worker_id=worker_id
+                    )
+                    self.message_repo.update_status(message_record.id, MessageState.SKIPPED)
+                    self.task_repo.update_state(current_task.id, TaskState.SKIPPED, worker_id=worker_id)
+                    return False
+
+                # Activate rate-limit cooldown if send was blocked by platform
                 if err_code in (ErrorCode.ACTION_BLOCKED, ErrorCode.ACCESS_PROHIBITED, ErrorCode.RATE_LIMITED):
                     self._activate_cooldown(
                         reason=f"Send action blocked: {send_res.get('reason', err_code.value)}",
@@ -672,9 +689,25 @@ class InstagramAutomationService:
                 )
                 return self.message_repo.create(msg)
 
-        # Fallback to first message for contact
+        # Fallback to first message for contact or default 'Hey'
         contact_messages = self.message_repo.list_by_contact(contact.id)
-        return contact_messages[0] if contact_messages else None
+        if contact_messages:
+            return contact_messages[0]
+
+        default_msg = Message(
+            id=generate_id("MSG"),
+            contact_id=contact.id,
+            task_id=task.id,
+            sequence=0,
+            body="Hey",
+            status=MessageState.PENDING,
+            created_at=utc_now_iso(),
+            updated_at=utc_now_iso(),
+        )
+        try:
+            return self.message_repo.create(default_msg)
+        except Exception:
+            return default_msg
 
     def _record_error(
         self,

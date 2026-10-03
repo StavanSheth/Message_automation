@@ -56,13 +56,27 @@ class InstagramMessageSender:
             result = session.evaluate(
                 """() => {
                     const bodyText = document.body ? document.body.innerText : '';
-                    if (bodyText.includes("Couldn't send") || bodyText.includes('Failed to send')) {
-                        return { submitted: false, reason: 'send_failed_banner', error_type: 'MESSAGE_SEND_FAILED' };
+                    if (
+                        bodyText.includes("Couldn't send") ||
+                        bodyText.includes("Failed to send") ||
+                        bodyText.includes("Tap to retry") ||
+                        bodyText.includes("Not delivered") ||
+                        bodyText.includes("Sending failed")
+                    ) {
+                        return { submitted: false, reason: 'network_send_failed_banner', error_type: 'MESSAGE_SEND_FAILED' };
                     }
                     if (bodyText.includes('Action Blocked') || bodyText.includes('Try again later')) {
                         return { submitted: false, reason: 'action_blocked', error_type: 'ACCESS_PROHIBITED' };
                     }
-                    if (bodyText.includes('You cannot message this account')) {
+                    if (
+                        bodyText.includes("can't message this account") ||
+                        bodyText.includes("cannot message this account") ||
+                        bodyText.includes("doesn't allow new message requests") ||
+                        bodyText.includes("don't allow new message requests") ||
+                        bodyText.includes("Not everyone can message this account") ||
+                        bodyText.includes("can't receive your message") ||
+                        bodyText.includes("cannot receive your message")
+                    ) {
                         return { submitted: false, reason: 'dm_not_available', error_type: 'DM_NOT_AVAILABLE' };
                     }
                     const inputEl = document.querySelector('textarea, [role="textbox"], [contenteditable="true"], div[aria-label*="Message" i]');
@@ -78,7 +92,15 @@ class InstagramMessageSender:
                     if (bodyText.includes('Action Blocked') || bodyText.includes('Try again later')) {
                         return { submitted: false, reason: 'action_blocked', error_type: 'ACCESS_PROHIBITED' };
                     }
-                    if (bodyText.includes('You cannot message this account')) {
+                    if (
+                        bodyText.includes("can't message this account") ||
+                        bodyText.includes("cannot message this account") ||
+                        bodyText.includes("doesn't allow new message requests") ||
+                        bodyText.includes("don't allow new message requests") ||
+                        bodyText.includes("Not everyone can message this account") ||
+                        bodyText.includes("can't receive your message") ||
+                        bodyText.includes("cannot receive your message")
+                    ) {
                         return { submitted: false, reason: 'dm_not_available', error_type: 'DM_NOT_AVAILABLE' };
                     }
 
@@ -109,8 +131,14 @@ class InstagramMessageSender:
                     }
 
                     // Check post-send error indicators
-                    if (bodyText.includes("Couldn't send") || bodyText.includes('Failed to send')) {
-                        return { submitted: false, reason: 'send_failed_banner', error_type: 'MESSAGE_SEND_FAILED' };
+                    if (
+                        bodyText.includes("Couldn't send") ||
+                        bodyText.includes("Failed to send") ||
+                        bodyText.includes("Tap to retry") ||
+                        bodyText.includes("Not delivered") ||
+                        bodyText.includes("Sending failed")
+                    ) {
+                        return { submitted: false, reason: 'network_send_failed_banner', error_type: 'MESSAGE_SEND_FAILED' };
                     }
 
                     const inputEl = document.querySelector('textarea, [role="textbox"], [contenteditable="true"], div[aria-label*="Message" i]');

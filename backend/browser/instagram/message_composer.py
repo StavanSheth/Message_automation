@@ -57,15 +57,31 @@ class InstagramMessageComposer:
             logger.warning(f"Could not open message dialog: {reason}")
             return {"success": False, "reason": reason}
 
-        # Wait for message input area to appear
+        # Wait for message input area to appear or detect recipient DM blocking
         ready = session.evaluate(
             """() => {
+                const bodyText = document.body ? document.body.innerText : '';
+                if (
+                    bodyText.includes("can't message this account") ||
+                    bodyText.includes("cannot message this account") ||
+                    bodyText.includes("doesn't allow new message requests") ||
+                    bodyText.includes("don't allow new message requests") ||
+                    bodyText.includes("Not everyone can message this account") ||
+                    bodyText.includes("can't receive your message") ||
+                    bodyText.includes("cannot receive your message")
+                ) {
+                    return { blocked: true, reason: 'dm_blocked_by_recipient' };
+                }
                 const input = document.querySelector(
-                    'textarea, [role="textbox"], [contenteditable="true"], div[aria-label*="Message"]'
+                    'textarea, [role="textbox"], [contenteditable="true"], div[aria-label*="Message" i]'
                 );
-                return !!input;
+                return { blocked: false, ready: !!input };
             }"""
         )
+        if isinstance(ready, dict):
+            if ready.get("blocked"):
+                return {"success": False, "blocked": True, "reason": ready.get("reason", "dm_blocked_by_recipient")}
+            return {"success": True, "dialog_open": bool(ready.get("ready"))}
         return {"success": True, "dialog_open": bool(ready)}
 
     def compose_message(self, session: BrowserSessionInstance, body: str) -> Dict[str, Any]:

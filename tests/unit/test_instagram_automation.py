@@ -343,3 +343,207 @@ def test_instagram_automation_service_full_flow(db_repos):
     updated_fu = followup_repo.get_by_id(fu1.id)
     assert updated_fu.status == FollowupStatus.SCHEDULED
     assert updated_fu.scheduled_at > "2026-01-01"
+
+
+def test_edge_case_page_not_found_skipped(db_repos):
+    """Verify Page Not Found (404/broken link) marks task SKIPPED and records PROFILE_NOT_FOUND."""
+    contact_repo = db_repos["contact_repo"]
+    task_repo = db_repos["task_repo"]
+    message_repo = db_repos["message_repo"]
+    followup_repo = db_repos["followup_repo"]
+    event_repo = db_repos["event_repo"]
+    error_repo = db_repos["error_repo"]
+    verification_repo = db_repos["verification_repo"]
+
+    contact = Contact(
+        id="C-404-1",
+        name="Missing User",
+        instagram_url="https://www.instagram.com/nonexistent_user_404/",
+        username="nonexistent_user_404",
+    )
+    contact_repo.create(contact)
+
+    task = Task(id="T-404-1", contact_id=contact.id, type=TaskType.MESSAGE, sequence=0, status=TaskState.READY)
+    task_repo.create(task)
+
+    mock_session = MagicMock(spec=BrowserSessionInstance)
+    mock_session.is_alive.return_value = True
+    mock_session.navigate.return_value = "https://www.instagram.com/nonexistent_user_404/"
+    mock_session.evaluate.side_effect = [
+        {"state": "AUTHENTICATED", "reason": "nav_present"},  # Auth
+        {"status": "NOT_FOUND", "reason": "page_not_found_message"},  # Navigator returns NOT_FOUND
+    ]
+
+    service = InstagramAutomationService(
+        task_repo=task_repo,
+        contact_repo=contact_repo,
+        message_repo=message_repo,
+        followup_repo=followup_repo,
+        event_repo=event_repo,
+        error_repo=error_repo,
+        verification_repo=verification_repo,
+        settings=AppSettings(execution_mode="AUTOMATIC"),
+    )
+
+    result = service.execute_messaging_task(task, mock_session, worker_id="W-1")
+    assert result is False
+
+    updated_task = task_repo.get_by_id(task.id)
+    assert updated_task.status == TaskState.SKIPPED
+
+    # Verify error recorded
+    errors = error_repo.list_by_task(task.id)
+    assert len(errors) > 0
+    assert errors[0].code == ErrorCode.PROFILE_NOT_FOUND
+
+
+def test_edge_case_internet_disconnect_timeout(db_repos):
+    """Verify network drop or timeout causes RETRY_WAIT with TIMEOUT error."""
+    contact_repo = db_repos["contact_repo"]
+    task_repo = db_repos["task_repo"]
+    message_repo = db_repos["message_repo"]
+    followup_repo = db_repos["followup_repo"]
+    event_repo = db_repos["event_repo"]
+    error_repo = db_repos["error_repo"]
+    verification_repo = db_repos["verification_repo"]
+
+    contact = Contact(
+        id="C-TIMEOUT-1",
+        name="Slow Connection",
+        instagram_url="https://www.instagram.com/slow_user/",
+        username="slow_user",
+    )
+    contact_repo.create(contact)
+
+    task = Task(id="T-TIMEOUT-1", contact_id=contact.id, type=TaskType.MESSAGE, sequence=0, status=TaskState.READY)
+    task_repo.create(task)
+
+    mock_session = MagicMock(spec=BrowserSessionInstance)
+    mock_session.is_alive.return_value = True
+    mock_session.navigate.return_value = "https://www.instagram.com/slow_user/"
+    mock_session.evaluate.side_effect = [
+        {"state": "AUTHENTICATED", "reason": "nav_present"},  # Auth
+        {"status": "UNAVAILABLE", "reason": "timeout_or_disconnect"},  # Navigator returns UNAVAILABLE
+    ]
+
+    service = InstagramAutomationService(
+        task_repo=task_repo,
+        contact_repo=contact_repo,
+        message_repo=message_repo,
+        followup_repo=followup_repo,
+        event_repo=event_repo,
+        error_repo=error_repo,
+        verification_repo=verification_repo,
+        settings=AppSettings(execution_mode="AUTOMATIC"),
+    )
+
+    result = service.execute_messaging_task(task, mock_session, worker_id="W-1")
+    assert result is False
+
+    updated_task = task_repo.get_by_id(task.id)
+    assert updated_task.status == TaskState.RETRY_WAIT
+
+    errors = error_repo.list_by_task(task.id)
+    assert len(errors) > 0
+    assert errors[0].code == ErrorCode.TIMEOUT
+    assert errors[0].retryable is True
+
+
+def test_edge_case_blocked_dms_dialog_banner(db_repos):
+    """Verify when recipient blocks DMs (dialog shows blocked banner), task is SKIPPED with DM_NOT_AVAILABLE."""
+    contact_repo = db_repos["contact_repo"]
+    task_repo = db_repos["task_repo"]
+    message_repo = db_repos["message_repo"]
+    followup_repo = db_repos["followup_repo"]
+    event_repo = db_repos["event_repo"]
+    error_repo = db_repos["error_repo"]
+    verification_repo = db_repos["verification_repo"]
+
+    contact = Contact(
+        id="C-BLOCKED-1",
+        name="Blocked Business",
+        instagram_url="https://www.instagram.com/blocked_business/",
+        username="blocked_business",
+    )
+    contact_repo.create(contact)
+
+    task = Task(id="T-BLOCKED-1", contact_id=contact.id, type=TaskType.MESSAGE, sequence=0, status=TaskState.READY)
+    task_repo.create(task)
+
+    mock_session = MagicMock(spec=BrowserSessionInstance)
+    mock_session.is_alive.return_value = True
+    mock_session.navigate.return_value = "https://www.instagram.com/blocked_business/"
+
+    # Auth -> Navigator AVAILABLE -> Reader (can_message=True button found) -> Composer detects recipient DM block
+    mock_session.evaluate.side_effect = [
+        {"state": "AUTHENTICATED", "reason": "nav_present"},  # Auth
+        {"status": "AVAILABLE"},  # Navigator
+        {                         # Reader
+            "url": "https://www.instagram.com/blocked_business/",
+            "username": "blocked_business",
+            "display_name": "Blocked Business",
+            "follower_count_text": "2,000",
+            "can_message": True,
+        },
+        {"success": True},        # Click message button
+        {"blocked": True, "reason": "dm_blocked_by_recipient"},  # Composer detect banner
+    ]
+
+    service = InstagramAutomationService(
+        task_repo=task_repo,
+        contact_repo=contact_repo,
+        message_repo=message_repo,
+        followup_repo=followup_repo,
+        event_repo=event_repo,
+        error_repo=error_repo,
+        verification_repo=verification_repo,
+        settings=AppSettings(execution_mode="AUTOMATIC"),
+    )
+
+    result = service.execute_messaging_task(task, mock_session, worker_id="W-1")
+    assert result is False
+
+    updated_task = task_repo.get_by_id(task.id)
+    assert updated_task.status == TaskState.SKIPPED
+
+    errors = error_repo.list_by_task(task.id)
+    assert any(e.code == ErrorCode.DM_NOT_AVAILABLE for e in errors)
+
+
+def test_edge_case_default_message_fallback_hey(db_repos):
+    """Verify that when no prior message exists, automation service creates a default message with 'Hey'."""
+    contact_repo = db_repos["contact_repo"]
+    task_repo = db_repos["task_repo"]
+    message_repo = db_repos["message_repo"]
+    followup_repo = db_repos["followup_repo"]
+    event_repo = db_repos["event_repo"]
+    error_repo = db_repos["error_repo"]
+    verification_repo = db_repos["verification_repo"]
+
+    contact = Contact(
+        id="C-HEY-1",
+        name="Hey Lead",
+        instagram_url="https://www.instagram.com/heylead/",
+        username="heylead",
+    )
+    contact_repo.create(contact)
+
+    task = Task(id="T-HEY-1", contact_id=contact.id, type=TaskType.MESSAGE, sequence=0, status=TaskState.READY)
+    task_repo.create(task)
+
+    # Note: No message record exists in DB for this task or contact!
+    service = InstagramAutomationService(
+        task_repo=task_repo,
+        contact_repo=contact_repo,
+        message_repo=message_repo,
+        followup_repo=followup_repo,
+        event_repo=event_repo,
+        error_repo=error_repo,
+        verification_repo=verification_repo,
+        settings=AppSettings(execution_mode="AUTOMATIC"),
+    )
+
+    msg = service._get_or_create_message_record(task, contact)
+    assert msg is not None
+    assert msg.body == "Hey"
+

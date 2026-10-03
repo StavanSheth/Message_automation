@@ -167,6 +167,8 @@ class InstagramNavigator:
                 if (
                     bodyText.includes("Sorry, this page isn't available") ||
                     bodyText.includes("The link you followed may be broken") ||
+                    bodyText.includes("Page isn't available") ||
+                    bodyText.includes("User not found") ||
                     title.includes('Page Not Found')
                 ) {
                     return { status: 'NOT_FOUND', reason: 'page_not_found_message' };

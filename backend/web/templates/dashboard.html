@@ -1007,6 +1007,7 @@
         </div>
 
         <div class="btn-group" id="stateControlsContainer">
+          <button class="btn btn-resume" id="btnStartAutomation" onclick="sendControl('start')">▶ Start Automation</button>
           <button class="btn btn-pause" id="btnPause" onclick="sendControl('pause')">Pause</button>
           <button class="btn btn-drain" id="btnDrain" onclick="sendControl('drain')">Drain</button>
           <button class="btn btn-stop" id="btnStop" onclick="openStopModal()">Stop</button>
@@ -1794,6 +1795,7 @@
       const container = document.getElementById('stateControlsContainer');
       if (state === 'RUNNING') {
         container.innerHTML = `
+          <button class="btn btn-resume" onclick="sendControl('start')">▶ Run Automation</button>
           <button class="btn btn-pause" onclick="sendControl('pause')">Pause</button>
           <button class="btn btn-drain" onclick="sendControl('drain')">Drain</button>
           <button class="btn btn-stop" onclick="openStopModal()">Stop</button>
@@ -1801,7 +1803,7 @@
         `;
       } else if (state === 'PAUSED') {
         container.innerHTML = `
-          <button class="btn btn-resume" onclick="sendControl('resume')">Resume</button>
+          <button class="btn btn-resume" onclick="sendControl('resume')">▶ Start / Resume Automation</button>
           <button class="btn btn-drain" onclick="sendControl('drain')">Drain</button>
           <button class="btn btn-stop" onclick="openStopModal()">Stop</button>
           <button class="btn btn-tick" onclick="sendTick()">Trigger Tick</button>
@@ -1814,7 +1816,7 @@
         `;
       } else {
         container.innerHTML = `
-          <button class="btn btn-resume" onclick="sendControl('start')">Start Automation</button>
+          <button class="btn btn-resume" onclick="sendControl('start')">▶ Start Automation</button>
           <button class="btn btn-tick" onclick="sendTick()">Trigger Tick</button>
         `;
       }

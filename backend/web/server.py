@@ -108,8 +108,35 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         body = self._parse_post_body()
 
         if path == "/api/control/start":
-            res = self.app.start()
-            self._send_json(200, {"success": res.get("status") == "ok", "message": f"System start: {res.get('state', 'UNKNOWN')}"})
+            curr = self.app.control_service.state if self.app.control_service else None
+            curr_val = curr.value if hasattr(curr, "value") else str(curr)
+            if curr_val == "PAUSED":
+                self.app.resume("Operator started automation from dashboard")
+            elif curr_val != "RUNNING":
+                res = self.app.start()
+
+            # Ensure active worker exists
+            if self.app.worker_manager and hasattr(self.app.worker_manager, "active_count"):
+                if self.app.worker_manager.active_count == 0:
+                    try:
+                        self.app.worker_manager.start_worker()
+                    except Exception as ex:
+                        logger.warning(f"Error starting initial worker: {ex}")
+
+            # Trigger immediate scheduler tick to start browser agent task immediately
+            dispatched = 0
+            if self.app.scheduler:
+                try:
+                    dispatched = self.app.scheduler.tick()
+                except Exception as ex:
+                    logger.warning(f"Error executing immediate tick on start: {ex}")
+
+            state_label = self.app.control_service.state.value if self.app.control_service else "RUNNING"
+            self._send_json(200, {
+                "success": True,
+                "message": f"Automation active: {state_label}. Dispatched {dispatched} task(s) to browser agent.",
+                "dispatched": dispatched,
+            })
             return
 
         if path == "/api/control/pause":
@@ -127,7 +154,17 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 self._send_json(200, {"success": True, "message": "System is already running"})
                 return
             res = self.app.resume("Operator requested resume via dashboard")
-            self._send_json(200, {"success": res, "message": "System resumed" if res else "Could not resume system"})
+            dispatched = 0
+            if self.app.scheduler:
+                try:
+                    dispatched = self.app.scheduler.tick()
+                except Exception as ex:
+                    logger.warning(f"Error executing immediate tick on resume: {ex}")
+            self._send_json(200, {
+                "success": res,
+                "message": f"System resumed ({dispatched} task(s) dispatched)" if res else "Could not resume system",
+                "dispatched": dispatched,
+            })
             return
 
         if path == "/api/control/drain":
