@@ -115,27 +115,78 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             elif curr_val != "RUNNING":
                 res = self.app.start()
 
-            # Ensure active worker exists
-            if self.app.worker_manager and hasattr(self.app.worker_manager, "active_count"):
+            # Ensure active worker exists and has an active visible browser session
+            if self.app.worker_manager:
+                for wid, w in list(getattr(self.app.worker_manager, "_workers", {}).items()):
+                    if not w.session or not hasattr(w.session, "is_alive") or not w.session.is_alive():
+                        try:
+                            self.app.worker_manager.stop_worker(wid)
+                        except Exception:
+                            pass
+
                 if self.app.worker_manager.active_count == 0:
                     try:
                         self.app.worker_manager.start_worker()
                     except Exception as ex:
                         logger.warning(f"Error starting initial worker: {ex}")
+                else:
+                    for w in getattr(self.app.worker_manager, "_workers", {}).values():
+                        sess = getattr(w, "session", None)
+                        if sess and hasattr(sess, "is_alive") and sess.is_alive():
+                            try:
+                                curr_u = sess.evaluate("() => window.location.href || ''") if hasattr(sess, "evaluate") else ""
+                                if not curr_u or curr_u == "about:blank" or "instagram.com" not in curr_u:
+                                    sess.navigate("https://www.instagram.com/")
+                            except Exception as e:
+                                logger.debug(f"Could not refresh worker session url: {e}")
 
-            # Trigger immediate scheduler tick to start browser agent task immediately
-            dispatched = 0
-            if self.app.scheduler:
+            # Trigger immediate dispatch to browser agent
+            dispatched_count = 0
+            if self.app.task_dispatcher:
                 try:
-                    dispatched = self.app.scheduler.tick()
+                    dispatched_count = self.app.task_dispatcher.dispatch_ready_tasks()
                 except Exception as ex:
-                    logger.warning(f"Error executing immediate tick on start: {ex}")
+                    logger.warning(f"Error dispatching tasks on start: {ex}")
+            elif self.app.scheduler:
+                try:
+                    self.app.scheduler.tick()
+                except Exception:
+                    pass
 
             state_label = self.app.control_service.state.value if self.app.control_service else "RUNNING"
+            if dispatched_count > 0:
+                msg = f"Automation active: {state_label}. Dispatched {dispatched_count} task(s) to Chrome browser."
+            else:
+                msg = f"Automation active: {state_label}. Chrome browser launched! Log into Instagram in the browser to start automated messaging."
+
             self._send_json(200, {
                 "success": True,
-                "message": f"Automation active: {state_label}. Dispatched {dispatched} task(s) to browser agent.",
-                "dispatched": dispatched,
+                "message": msg,
+                "dispatched": dispatched_count,
+            })
+            return
+
+        if path == "/api/browser/open":
+            opened = False
+            if self.app.worker_manager:
+                if self.app.worker_manager.active_count == 0:
+                    try:
+                        self.app.worker_manager.start_worker()
+                        opened = True
+                    except Exception as ex:
+                        logger.warning(f"Error launching browser: {ex}")
+                else:
+                    for w in getattr(self.app.worker_manager, "_workers", {}).values():
+                        sess = getattr(w, "session", None)
+                        if sess and hasattr(sess, "is_alive") and sess.is_alive():
+                            try:
+                                sess.navigate("https://www.instagram.com/")
+                                opened = True
+                            except Exception:
+                                pass
+            self._send_json(200, {
+                "success": True,
+                "message": "Chrome browser opened to Instagram!" if opened else "Browser session active.",
             })
             return
 

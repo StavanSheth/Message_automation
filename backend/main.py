@@ -24,9 +24,16 @@ def main() -> None:
     parser.add_argument("--host", type=str, default="127.0.0.1", help="Web dashboard server host")
     parser.add_argument("--port", type=int, default=8080, help="Web dashboard server port")
     parser.add_argument("--no-web", action="store_true", help="Disable web dashboard server")
+    parser.add_argument("--headless", action="store_true", default=False, help="Run browser in headless mode (default: visible browser)")
+    parser.add_argument("--mode", type=str, default="AUTOMATIC", choices=["MANUAL", "AUTOMATIC"], help="Execution mode (default: AUTOMATIC)")
     args = parser.parse_args()
 
-    app = build_production_app(db_path=args.db)
+    from backend.config.settings import AppSettings
+    app_settings = AppSettings.load(overrides={
+        "browser_headless": args.headless,
+        "execution_mode": args.mode,
+    })
+    app = build_production_app(db_path=args.db, settings=app_settings)
 
     is_valid, errors = app.validate_dependency_graph()
     if not is_valid:

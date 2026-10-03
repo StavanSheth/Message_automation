@@ -155,8 +155,10 @@ class SpreadsheetIngestionService:
         and retrieve CSV data directly via real browser automation.
         """
         from playwright.sync_api import sync_playwright
+        from backend.config.settings import get_settings
+        is_headless = getattr(get_settings(), "browser_headless", False)
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
+            browser = p.chromium.launch(headless=is_headless)
             page = browser.new_page()
             try:
                 page.goto(url, wait_until="networkidle", timeout=35000)

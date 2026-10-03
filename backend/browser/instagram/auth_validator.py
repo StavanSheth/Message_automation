@@ -39,17 +39,23 @@ class InstagramAuthValidator:
                 }
 
                 // 3. Login required / form detected
+                const hasLoginBtn = Array.from(document.querySelectorAll('button, a')).some(el => {
+                    const t = (el.innerText || '').toLowerCase().trim();
+                    return t === 'log in' || t === 'sign up' || t === 'login';
+                });
                 if (
                     url.includes('/accounts/login') ||
                     url.includes('/accounts/emailsignup') ||
                     document.querySelector('form#loginForm') ||
-                    document.querySelector('input[name="username"]') && document.querySelector('input[name="password"]') ||
-                    body.includes('Log In to Instagram')
+                    (document.querySelector('input[name="username"]') && document.querySelector('input[name="password"]')) ||
+                    body.includes('Log In to Instagram') ||
+                    body.includes('Log in') ||
+                    hasLoginBtn
                 ) {
-                    return { state: 'LOGIN_REQUIRED', reason: 'login_form_present' };
+                    return { state: 'LOGIN_REQUIRED', reason: 'login_form_or_button_present' };
                 }
 
-                // 3. Authenticated indicators
+                // 4. Authenticated indicators
                 const hasInbox = !!document.querySelector('a[href*="/direct/inbox"], svg[aria-label*="Direct" i], svg[aria-label*="Messenger" i]');
                 const hasNav = !!document.querySelector('nav, div[role="navigation"]');
                 const hasProfileNav = !!document.querySelector('a[href*="/reels/"], a[href*="/explore/"]');

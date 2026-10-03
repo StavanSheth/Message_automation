@@ -103,6 +103,11 @@ class DefaultWorkerManager(WorkerManager):
             session_inst = self.browser_manager.create_session(worker_id=worker_id, account_id=account_id)
             try:
                 session_inst.start()
+                if hasattr(session_inst, "navigate"):
+                    try:
+                        session_inst.navigate("https://www.instagram.com/")
+                    except Exception as ne:
+                        logger.debug(f"Initial navigation deferred: {ne}")
             except Exception:
                 self.browser_manager.stop_session(session_inst.session_id)
                 raise
