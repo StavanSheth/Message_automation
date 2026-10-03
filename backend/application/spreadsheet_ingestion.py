@@ -156,7 +156,8 @@ class SpreadsheetIngestionService:
         """
         from playwright.sync_api import sync_playwright
         from backend.config.settings import get_settings
-        is_headless = getattr(get_settings(), "browser_headless", False)
+        settings = getattr(self.browser_manager, "settings", None) if self.browser_manager else get_settings()
+        is_headless = getattr(settings, "browser_headless", False)
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=is_headless)
             page = browser.new_page()
@@ -223,6 +224,16 @@ class SpreadsheetIngestionService:
                         return tables
                 except Exception:
                     continue
+
+            # Check if imported_excel.csv was downloaded
+            dest_path = os.path.join("data", "imported_excel.csv")
+            if os.path.exists(dest_path) and os.path.getsize(dest_path) > 1000:
+                with open(dest_path, "r", encoding="utf-8-sig", errors="replace") as f:
+                    cached_data = f.read()
+                if "instagram" in cached_data.lower() or "client" in cached_data.lower():
+                    browser.close()
+                    logger.info(f"Using downloaded spreadsheet data from {dest_path}")
+                    return cached_data
 
             browser.close()
             raise SourceAccessError(f"Could not extract spreadsheet data from browser session for '{url}'")

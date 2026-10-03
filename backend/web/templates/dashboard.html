@@ -1568,7 +1568,22 @@
 
     async function sendControl(action) {
       try {
-        const res = await fetch(`/api/control/${action}`, { method: 'POST' });
+        const payload = {};
+        if (action === 'start') {
+          const sheetInput = document.getElementById('sheetUrlInput');
+          const templateInput = document.getElementById('msgTemplateInput');
+          if (sheetInput && sheetInput.value.trim()) {
+            payload.url = sheetInput.value.trim();
+          }
+          if (templateInput && templateInput.value.trim()) {
+            payload.message_template = templateInput.value.trim();
+          }
+        }
+        const res = await fetch(`/api/control/${action}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
         const data = await res.json();
         showToast(data.message || `System ${action} requested`);
         fetchStatus();

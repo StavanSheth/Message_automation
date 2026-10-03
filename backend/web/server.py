@@ -108,6 +108,34 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         body = self._parse_post_body()
 
         if path == "/api/control/start":
+            body = body or {}
+            sheet_url = (body.get("url") or body.get("sheet_url") or "").strip()
+            msg_tmpl = (body.get("message_template") or body.get("template") or "Hey").strip()
+
+            if sheet_url:
+                has_ready_tasks = False
+                try:
+                    conn = self.app.db.get_connection()
+                    cur = conn.execute("SELECT count(*) FROM tasks WHERE status = 'READY'")
+                    row = cur.fetchone()
+                    if row and row[0] > 0:
+                        has_ready_tasks = True
+                except Exception:
+                    pass
+
+                if not has_ready_tasks:
+                    try:
+                        ingestion_service = getattr(self.app, "spreadsheet_ingestion_service", None)
+                        if not ingestion_service:
+                            from backend.application.spreadsheet_ingestion import SpreadsheetIngestionService
+                            ingestion_service = SpreadsheetIngestionService(
+                                source_service=self.app.source_service,
+                                browser_manager=self.app.browser_manager,
+                            )
+                        ingestion_service.import_from_input(source_input=sheet_url, message_template=msg_tmpl)
+                    except Exception as ex:
+                        logger.warning(f"Could not auto-import spreadsheet URL on start: {ex}")
+
             curr = self.app.control_service.state if self.app.control_service else None
             curr_val = curr.value if hasattr(curr, "value") else str(curr)
             if curr_val == "PAUSED":
@@ -129,16 +157,19 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                         self.app.worker_manager.start_worker()
                     except Exception as ex:
                         logger.warning(f"Error starting initial worker: {ex}")
-                else:
-                    for w in getattr(self.app.worker_manager, "_workers", {}).values():
-                        sess = getattr(w, "session", None)
-                        if sess and hasattr(sess, "is_alive") and sess.is_alive():
-                            try:
+
+                for w in getattr(self.app.worker_manager, "_workers", {}).values():
+                    sess = getattr(w, "session", None)
+                    if sess and hasattr(sess, "is_alive") and sess.is_alive():
+                        try:
+                            if sheet_url and (sheet_url.startswith("http://") or sheet_url.startswith("https://")):
+                                sess.navigate(sheet_url, timeout_ms=10000)
+                            else:
                                 curr_u = sess.evaluate("() => window.location.href || ''") if hasattr(sess, "evaluate") else ""
-                                if not curr_u or curr_u == "about:blank" or "instagram.com" not in curr_u:
-                                    sess.navigate("https://www.instagram.com/")
-                            except Exception as e:
-                                logger.debug(f"Could not refresh worker session url: {e}")
+                                if not curr_u or curr_u == "about:blank":
+                                    sess.navigate("https://www.instagram.com/", timeout_ms=10000)
+                        except Exception as e:
+                            logger.debug(f"Could not refresh worker session url: {e}")
 
             # Trigger immediate dispatch to browser agent
             dispatched_count = 0
@@ -328,6 +359,24 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                     source_input=source_input,
                     message_template=msg_template,
                 )
+
+                # Ensure active worker exists and navigate visible Chrome to the spreadsheet
+                if self.app.worker_manager:
+                    if self.app.worker_manager.active_count == 0:
+                        try:
+                            self.app.worker_manager.start_worker()
+                        except Exception as ex:
+                            logger.warning(f"Error starting initial worker on import: {ex}")
+
+                    for w in getattr(self.app.worker_manager, "_workers", {}).values():
+                        sess = getattr(w, "session", None)
+                        if sess and hasattr(sess, "is_alive") and sess.is_alive():
+                            try:
+                                if source_input.startswith("http://") or source_input.startswith("https://"):
+                                    sess.navigate(source_input)
+                            except Exception as e:
+                                logger.debug(f"Could not navigate worker session to imported URL: {e}")
+
                 self._send_json(200, result)
             except Exception as e:
                 logger.error(f"Spreadsheet import error: {e}", exc_info=True)

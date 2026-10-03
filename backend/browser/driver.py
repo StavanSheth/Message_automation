@@ -286,7 +286,8 @@ class PlaywrightBrowserDriver(BrowserDriver):
             except Exception as e:
                 logger.warning(f"Error closing page: {e}")
             finally:
-                self._page = None
+                pages = self._context.pages if self._context else []
+                self._page = pages[-1] if pages else None
 
     def navigate(self, url: str, timeout_ms: Optional[int] = None) -> str:
         return self._dispatch(self._raw_navigate, url, timeout_ms)

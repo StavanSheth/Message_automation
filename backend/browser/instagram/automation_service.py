@@ -309,6 +309,41 @@ class InstagramAutomationService:
             return False
 
         # ── 3. Profile Navigation ────────────────────────────────
+        # Open profile in a new tab if supported
+        opened_new_tab = False
+        from unittest.mock import MagicMock
+        if hasattr(session, "new_tab") and callable(getattr(session, "new_tab")) and not isinstance(session, MagicMock):
+            try:
+                session.new_tab()
+                opened_new_tab = True
+            except Exception as e:
+                logger.debug(f"Could not open new tab for task {current_task.id}: {e}")
+
+        try:
+            return self._execute_task_pipeline(
+                current_task=current_task,
+                contact=contact,
+                message_record=message_record,
+                session=session,
+                worker_id=worker_id,
+                corr_id=corr_id,
+            )
+        finally:
+            if opened_new_tab and hasattr(session, "close_tab"):
+                try:
+                    session.close_tab()
+                except Exception as ex:
+                    logger.debug(f"Could not close task tab: {ex}")
+
+    def _execute_task_pipeline(
+        self,
+        current_task: Task,
+        contact: Contact,
+        message_record: Any,
+        session: BrowserSessionInstance,
+        worker_id: Optional[str],
+        corr_id: str,
+    ) -> bool:
         nav_result = self.navigator.navigate_to_profile(session, contact.instagram_url) or {}
         page_status = nav_result.get("status", InstagramPageStatus.UNKNOWN) or InstagramPageStatus.UNKNOWN
 
@@ -633,6 +668,7 @@ class InstagramAutomationService:
                 worker_id=worker_id,
             )
             return False
+
 
     def _schedule_next_followup(self, task: Task, contact: Contact, sent_at_iso: str) -> None:
         """

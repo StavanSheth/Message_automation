@@ -131,6 +131,30 @@ class BrowserSessionInstance:
                 pass
         return self.current_url
 
+    def new_tab(self, url: Optional[str] = None) -> str:
+        """Open a new tab in the active browser context and optionally navigate to URL."""
+        if not self.is_alive():
+            raise BrowserCrashError(f"Session {self.session_id} is not alive for new_tab", code=ErrorCode.BROWSER_CRASH)
+        self.status = SessionStatus.BUSY
+        try:
+            self.driver.new_page()
+            self.status = SessionStatus.READY
+            if url:
+                return self.navigate(url)
+            return self.get_current_url()
+        except Exception:
+            self.status = SessionStatus.READY
+            raise
+
+    def close_tab(self) -> None:
+        """Close the active tab in the browser context."""
+        if self.is_alive():
+            try:
+                self.driver.close_page()
+                self.current_url = self.get_current_url()
+            except Exception as e:
+                logger.warning(f"Error closing tab in session {self.session_id}: {e}")
+
     def evaluate(self, expression: str, arg: Any = None) -> Any:
         """Evaluate JavaScript safely in page."""
         if not self.is_alive():
