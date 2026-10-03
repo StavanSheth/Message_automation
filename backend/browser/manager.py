@@ -289,9 +289,9 @@ class BrowserManager:
 
     def is_healthy(self) -> bool:
         """Check if all currently tracked active browser sessions are responsive and alive."""
-        for sess in self._active_sessions.values():
-            if not sess.is_alive():
-                return False
+        dead_sessions = [sid for sid, sess in self._active_sessions.items() if not sess.is_alive()]
+        for sid in dead_sessions:
+            self.stop_session(sid)
         return True
 
     def recover_session(

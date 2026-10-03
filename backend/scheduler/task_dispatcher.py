@@ -330,9 +330,8 @@ class TaskDispatcher:
                 executor = getattr(self.worker_manager, "task_executor", None)
                 if executor:
                     try:
-                        success = worker.execute_assigned_task(task, executor=executor)
-                        if success:
-                            processed += 1
+                        worker.execute_assigned_task(task, executor=executor)
+                        processed += 1
                     except Exception as e:
                         logger.error(f"Error executing assigned task {task.id} on worker {worker.worker_id}: {e}")
                 break

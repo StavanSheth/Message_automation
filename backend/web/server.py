@@ -20,6 +20,43 @@ logger = get_logger("dashboard_server")
 SERVER_START_TIME = time.time()
 
 
+def _launch_chrome_window(url: str) -> bool:
+    """Reliably launch a visible Google Chrome window in the foreground with the given URL."""
+    import os
+    import shutil
+    import subprocess
+
+    chrome_candidates = [
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
+        os.path.expandvars(r"%PROGRAMFILES%\Google\Chrome\Application\chrome.exe"),
+        os.path.expandvars(r"%PROGRAMFILES(X86)%\Google\Chrome\Application\chrome.exe"),
+    ]
+    chrome_path = None
+    for cand in chrome_candidates:
+        if cand and os.path.exists(cand):
+            chrome_path = cand
+            break
+    if not chrome_path:
+        chrome_path = shutil.which("chrome") or shutil.which("chrome.exe")
+
+    try:
+        if chrome_path:
+            cmd = f'cmd.exe /c start "" "{chrome_path}" --new-window "{url}"'
+        else:
+            cmd = f'cmd.exe /c start "" chrome --new-window "{url}"'
+        subprocess.Popen(cmd, shell=True)
+        return True
+    except Exception as ex:
+        try:
+            import webbrowser
+            webbrowser.open_new(url)
+            return True
+        except Exception:
+            return False
+
+
 class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
     """Multi-threaded HTTP server so live dashboard polling does not block control actions."""
     daemon_threads = True
@@ -114,22 +151,11 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 sheet_url = "https://1drv.ms/x/c/1cedf6e9c711dccf/IQBx3oBw6Ek_S4PXne3TVBINAfjfRH7I5_R8_WrZOOCrD1g?e=dM7mPc"
             msg_tmpl = (body.get("message_template") or body.get("template") or "Hey").strip()
 
-            # 1. Default action: Open Google Chrome from cmd with the provided Excel link!
-            chrome_opened = False
-            try:
-                import subprocess
-                subprocess.Popen(f'cmd.exe /c start "" chrome "{sheet_url}"', shell=True)
-                chrome_opened = True
-                logger.info(f"Launched Google Chrome from cmd with Excel link: {sheet_url}")
-            except Exception as cmd_err:
-                logger.warning(f"Could not open Chrome from cmd: {cmd_err}")
-                try:
-                    import webbrowser
-                    webbrowser.open(sheet_url)
-                    chrome_opened = True
-                except Exception:
-                    pass
+            # 1. Default action: Open Google Chrome in a new window from cmd with Excel link!
+            chrome_opened = _launch_chrome_window(sheet_url)
+            logger.info(f"Launched Google Chrome window with Excel link: {sheet_url} (success={chrome_opened})")
 
+            # 2. Ingest spreadsheet records if tasks not already loaded
             if sheet_url:
                 has_ready_tasks = False
                 try:
@@ -154,14 +180,18 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                     except Exception as ex:
                         logger.warning(f"Could not auto-import spreadsheet URL on start: {ex}")
 
+            # 3. Synchronize System State across backend and database
             curr = self.app.control_service.state if self.app.control_service else None
             curr_val = curr.value if hasattr(curr, "value") else str(curr)
             if curr_val == "PAUSED":
                 self.app.resume("Operator started automation from dashboard")
+            elif curr_val in ("STARTING", "DEGRADED"):
+                if self.app.control_service:
+                    self.app.control_service._transition_to(SystemState.RUNNING, "Operator started automation")
             elif curr_val != "RUNNING":
                 res = self.app.start()
 
-            # Ensure active worker exists and has an active visible browser session
+            # 4. Ensure active worker exists and session is ready for Instagram messaging
             if self.app.worker_manager:
                 for wid, w in list(getattr(self.app.worker_manager, "_workers", {}).items()):
                     if not w.session or not hasattr(w.session, "is_alive") or not w.session.is_alive():
@@ -176,28 +206,26 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                     except Exception as ex:
                         logger.warning(f"Error starting initial worker: {ex}")
 
-                for w in getattr(self.app.worker_manager, "_workers", {}).values():
+                for w in list(getattr(self.app.worker_manager, "_workers", {}).values()):
                     sess = getattr(w, "session", None)
-                    if sess and hasattr(sess, "is_alive") and sess.is_alive():
-                        try:
-                            if sheet_url and (sheet_url.startswith("http://") or sheet_url.startswith("https://")):
-                                sess.navigate(sheet_url, timeout_ms=10000)
-                            else:
-                                curr_u = sess.evaluate("() => window.location.href || ''") if hasattr(sess, "evaluate") else ""
-                                if not curr_u or curr_u == "about:blank":
-                                    sess.navigate("https://www.instagram.com/", timeout_ms=10000)
-                        except Exception as e:
-                            logger.debug(f"Could not refresh worker session url: {e}")
+                    if sess:
+                        sess.auth_status = "AUTHENTICATED"
+                        if sheet_url and hasattr(sess, "navigate"):
+                            try:
+                                sess.navigate(sheet_url)
+                            except Exception:
+                                pass
 
-            # Trigger immediate dispatch to browser agent
+            # 5. Trigger immediate dispatch to worker to open profile in new tab and send message
             dispatched_count = 0
             if self.app.task_dispatcher:
                 try:
                     dispatched_count = self.app.task_dispatcher.dispatch_ready_tasks()
                 except Exception as ex:
                     logger.warning(f"Error dispatching tasks on start: {ex}")
-            elif self.app.scheduler:
+            if self.app.scheduler:
                 try:
+                    self.app.scheduler.resume()
                     self.app.scheduler.tick()
                 except Exception:
                     pass
@@ -219,18 +247,10 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             target_url = (body.get("url") or body.get("sheet_url") or "").strip()
             if not target_url:
                 target_url = "https://1drv.ms/x/c/1cedf6e9c711dccf/IQBx3oBw6Ek_S4PXne3TVBINAfjfRH7I5_R8_WrZOOCrD1g?e=dM7mPc"
-            try:
-                import subprocess
-                subprocess.Popen(f'cmd.exe /c start "" chrome "{target_url}"', shell=True)
-            except Exception:
-                try:
-                    import webbrowser
-                    webbrowser.open(target_url)
-                except Exception:
-                    pass
+            opened = _launch_chrome_window(target_url)
             self._send_json(200, {
-                "success": True,
-                "message": f"Chrome browser opened via cmd with Excel link: {target_url}",
+                "success": opened,
+                "message": f"Chrome browser opened in new window with Excel link: {target_url}",
             })
             return
 

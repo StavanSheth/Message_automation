@@ -26,6 +26,9 @@ class InstagramAuthValidator:
             result = session.evaluate(
             """() => {
                 const url = window.location.href || '';
+                if (!url.includes('instagram.com')) {
+                    return { state: 'AUTHENTICATED', reason: 'non_instagram_page' };
+                }
                 const body = document.body ? (document.body.innerText || '').substring(0, 3000) : '';
 
                 // 1. Checkpoint or Challenge

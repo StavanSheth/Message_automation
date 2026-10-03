@@ -382,6 +382,12 @@ class InstagramAutomationService:
                 current_task, ErrorCode.PROFILE_NOT_FOUND, "Target profile not found on Instagram", retryable=False, worker_id=worker_id
             )
             self.task_repo.update_state(current_task.id, TaskState.SKIPPED, worker_id=worker_id)
+            if self.contact_repo and contact:
+                try:
+                    contact.notes = "Page not found / broken link"
+                    self.contact_repo.update(contact)
+                except Exception:
+                    pass
             return False
 
         if page_status == InstagramPageStatus.ACCESS_BLOCKED:
@@ -469,7 +475,7 @@ class InstagramAutomationService:
 
         send_allowed = self.verifier.is_send_allowed(decision, execution_mode=self.settings.execution_mode)
         if not send_allowed:
-            logger.warning(f"Verification decision '{decision.value}' requires manual review for task {task.id}")
+            logger.warning(f"Verification decision '{decision.value}' requires manual review for task {current_task.id}")
             self.message_repo.update_status(message_record.id, MessageState.AWAITING_APPROVAL)
             self.task_repo.update_state(current_task.id, TaskState.MANUAL_REVIEW, worker_id=worker_id)
             return False
@@ -482,6 +488,12 @@ class InstagramAutomationService:
             )
             self.message_repo.update_status(message_record.id, MessageState.SKIPPED)
             self.task_repo.update_state(current_task.id, TaskState.SKIPPED, worker_id=worker_id)
+            if self.contact_repo and contact:
+                try:
+                    contact.notes = "DM unavailable / Blocked"
+                    self.contact_repo.update(contact)
+                except Exception:
+                    pass
             return False
 
         # ── 6. Open Dialog & Compose Message ──────────────────────
@@ -625,6 +637,12 @@ class InstagramAutomationService:
                 result_code="SUCCESS",
             )
             self.task_repo.update_state(current_task.id, TaskState.COMPLETED, worker_id=worker_id)
+            if self.contact_repo and contact:
+                try:
+                    contact.notes = "Done"
+                    self.contact_repo.update(contact)
+                except Exception:
+                    pass
 
             self.event_repo.record(
                 event_code=EventCode.MESSAGE_VERIFIED,
