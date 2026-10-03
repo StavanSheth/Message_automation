@@ -110,7 +110,25 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         if path == "/api/control/start":
             body = body or {}
             sheet_url = (body.get("url") or body.get("sheet_url") or "").strip()
+            if not sheet_url:
+                sheet_url = "https://1drv.ms/x/c/1cedf6e9c711dccf/IQBx3oBw6Ek_S4PXne3TVBINAfjfRH7I5_R8_WrZOOCrD1g?e=dM7mPc"
             msg_tmpl = (body.get("message_template") or body.get("template") or "Hey").strip()
+
+            # 1. Default action: Open Google Chrome from cmd with the provided Excel link!
+            chrome_opened = False
+            try:
+                import subprocess
+                subprocess.Popen(f'cmd.exe /c start "" chrome "{sheet_url}"', shell=True)
+                chrome_opened = True
+                logger.info(f"Launched Google Chrome from cmd with Excel link: {sheet_url}")
+            except Exception as cmd_err:
+                logger.warning(f"Could not open Chrome from cmd: {cmd_err}")
+                try:
+                    import webbrowser
+                    webbrowser.open(sheet_url)
+                    chrome_opened = True
+                except Exception:
+                    pass
 
             if sheet_url:
                 has_ready_tasks = False
@@ -185,10 +203,9 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                     pass
 
             state_label = self.app.control_service.state.value if self.app.control_service else "RUNNING"
+            msg = f"Chrome browser opened with Excel link! Automation active: {state_label}."
             if dispatched_count > 0:
-                msg = f"Automation active: {state_label}. Dispatched {dispatched_count} task(s) to Chrome browser."
-            else:
-                msg = f"Automation active: {state_label}. Chrome browser launched! Log into Instagram in the browser to start automated messaging."
+                msg += f" Dispatched {dispatched_count} task(s) to Chrome browser."
 
             self._send_json(200, {
                 "success": True,
@@ -198,26 +215,22 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/browser/open":
-            opened = False
-            if self.app.worker_manager:
-                if self.app.worker_manager.active_count == 0:
-                    try:
-                        self.app.worker_manager.start_worker()
-                        opened = True
-                    except Exception as ex:
-                        logger.warning(f"Error launching browser: {ex}")
-                else:
-                    for w in getattr(self.app.worker_manager, "_workers", {}).values():
-                        sess = getattr(w, "session", None)
-                        if sess and hasattr(sess, "is_alive") and sess.is_alive():
-                            try:
-                                sess.navigate("https://www.instagram.com/")
-                                opened = True
-                            except Exception:
-                                pass
+            body = body or {}
+            target_url = (body.get("url") or body.get("sheet_url") or "").strip()
+            if not target_url:
+                target_url = "https://1drv.ms/x/c/1cedf6e9c711dccf/IQBx3oBw6Ek_S4PXne3TVBINAfjfRH7I5_R8_WrZOOCrD1g?e=dM7mPc"
+            try:
+                import subprocess
+                subprocess.Popen(f'cmd.exe /c start "" chrome "{target_url}"', shell=True)
+            except Exception:
+                try:
+                    import webbrowser
+                    webbrowser.open(target_url)
+                except Exception:
+                    pass
             self._send_json(200, {
                 "success": True,
-                "message": "Chrome browser opened to Instagram!" if opened else "Browser session active.",
+                "message": f"Chrome browser opened via cmd with Excel link: {target_url}",
             })
             return
 

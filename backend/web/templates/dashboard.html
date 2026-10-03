@@ -1071,7 +1071,7 @@
             <label style="display: block; font-size: 0.7rem; font-weight: 700; color: var(--text-muted); margin-bottom: 0.35rem; letter-spacing: 0.04em;">
               SPREADSHEET LINK / FILE PATH
             </label>
-            <input type="text" id="sheetUrlInput" placeholder="https://docs.google.com/spreadsheets/d/... or leads.xlsx" style="width: 100%; background: rgba(0,0,0,0.35); border: 1px solid var(--border-subtle); border-radius: 6px; padding: 0.6rem 0.85rem; color: #fff; font-size: 0.82rem; font-family: 'JetBrains Mono', monospace;" />
+            <input type="text" id="sheetUrlInput" value="https://1drv.ms/x/c/1cedf6e9c711dccf/IQBx3oBw6Ek_S4PXne3TVBINAfjfRH7I5_R8_WrZOOCrD1g?e=dM7mPc" placeholder="https://docs.google.com/spreadsheets/d/... or leads.xlsx" style="width: 100%; background: rgba(0,0,0,0.35); border: 1px solid var(--border-subtle); border-radius: 6px; padding: 0.6rem 0.85rem; color: #fff; font-size: 0.82rem; font-family: 'JetBrains Mono', monospace;" />
           </div>
 
           <div>
@@ -1594,10 +1594,16 @@
 
     async function openBrowserWindow() {
       try {
-        showToast('Launching Chrome browser window...');
-        const res = await fetch('/api/browser/open', { method: 'POST' });
+        const sheetInput = document.getElementById('sheetUrlInput');
+        const url = sheetInput ? sheetInput.value.trim() : '';
+        showToast('Opening Chrome browser from cmd...');
+        const res = await fetch('/api/browser/open', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: url })
+        });
         const data = await res.json();
-        showToast(data.message || 'Browser opened');
+        showToast(data.message || 'Chrome opened');
         fetchStatus();
       } catch (e) {
         showToast('Browser launch error: ' + e.message);
