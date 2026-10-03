@@ -417,3 +417,53 @@ class SourceService:
                     logger.warning(f"Failed to write-back replied status to source: {e}")
 
         return True
+
+    def update_lead_remarks(
+        self,
+        contact_id: str,
+        remarks: str = "Done",
+        source_adapter: Optional[SourceAdapter] = None,
+    ) -> bool:
+        """
+        Update a lead's remarks in the database and optionally write back to the source spreadsheet/Excel.
+        """
+        contact = self.contact_repo.get_by_id(contact_id)
+        if not contact:
+            return False
+
+        notes_dict = {}
+        if contact.notes:
+            try:
+                import json
+                notes_dict = json.loads(contact.notes)
+                if not isinstance(notes_dict, dict):
+                    notes_dict = {"notes": str(contact.notes)}
+            except Exception:
+                notes_dict = {"notes": str(contact.notes)}
+
+        notes_dict["remarks"] = remarks
+        import json
+        contact.notes = json.dumps(notes_dict)
+        self.contact_repo.update(contact)
+
+        # Write-back to source spreadsheet if adapter provided or can be auto-resolved
+        if contact.source_record_id:
+            srec = self.source_record_repo.get_by_id(contact.source_record_id)
+            if srec:
+                adapter = source_adapter
+                if adapter is None and srec.source_identifier and srec.source_identifier.endswith(".xlsx"):
+                    import os
+                    if os.path.exists(srec.source_identifier):
+                        from backend.sources.xlsx.adapter import LocalXlsxSource
+                        try:
+                            adapter = LocalXlsxSource(srec.source_identifier)
+                        except Exception:
+                            adapter = None
+                if adapter:
+                    try:
+                        adapter.update_record(srec.row_index, {"remarks": remarks})
+                    except Exception as e:
+                        logger.warning(f"Failed to write-back remarks to source: {e}")
+
+        return True
+

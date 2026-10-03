@@ -214,6 +214,7 @@ def build_production_app(
     cooldown_repo = overrides.get("cooldown_repo") or CooldownRepository(database)
     reconciliation_repo = overrides.get("reconciliation_repo") or ReconciliationRepository(database)
     manual_review_repo = overrides.get("manual_review_repo") or ManualReviewRepository(database)
+    source_record_repo = overrides.get("source_record_repo") or SourceRecordRepository(database)
 
     # 2. Base Services
     backup_service = overrides.get("backup_service") or DatabaseBackupService(database)
@@ -261,6 +262,8 @@ def build_production_app(
         worker_repo=worker_repo,
         account_repo=account_repo,
         auth_validator=auth_validator,
+        contact_repo=contact_repo,
+        source_record_repo=source_record_repo,
     )
 
     task_executor = overrides.get("task_executor") or TaskExecutor(

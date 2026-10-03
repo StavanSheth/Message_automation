@@ -1231,6 +1231,31 @@
         </div>
       </section>
 
+      <!-- INGESTED LEADS TABLE -->
+      <section class="panel" id="leads-table">
+        <div class="panel-head">
+          <span class="panel-title">Ingested Leads &amp; Target Accounts</span>
+          <span class="panel-action" id="leadsCountMeta">Database &amp; Source Synced</span>
+        </div>
+        <div class="table-responsive">
+          <table>
+            <thead>
+              <tr>
+                <th>Id No</th>
+                <th>Client Name</th>
+                <th>Industry</th>
+                <th>Instagram Link</th>
+                <th>Remarks</th>
+                <th>Task Status</th>
+              </tr>
+            </thead>
+            <tbody id="contactsTbody">
+              <tr><td colspan="6" style="text-align: center; color: var(--text-dim); padding: 1.5rem;">No leads imported yet. Paste your spreadsheet link above to queue tasks.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
       <!-- 8 & 9. ACCOUNT HEALTH & BROWSER SESSIONS -->
       <div class="grid-2col">
         <!-- 8. Accounts -->
@@ -1726,6 +1751,9 @@
         // Tasks
         renderTasks(data.recent_tasks || []);
 
+        // Ingested Leads / Contacts
+        renderContacts(data.contacts || []);
+
         // Accounts & Sessions
         renderAccounts(data.accounts || []);
         renderSessions(data.browser_sessions || []);
@@ -1870,6 +1898,40 @@
           </td>
         </tr>
       `).join('');
+    }
+
+    function renderContacts(contacts) {
+      const tbody = document.getElementById('contactsTbody');
+      if (!tbody) return;
+      const countMeta = document.getElementById('leadsCountMeta');
+      if (countMeta) {
+        countMeta.innerText = `${contacts ? contacts.length : 0} Ingested`;
+      }
+      if (!contacts || contacts.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: var(--text-dim); padding: 1.5rem;">No leads imported yet. Paste your spreadsheet link above to queue tasks.</td></tr>';
+        return;
+      }
+      tbody.innerHTML = contacts.map(c => {
+        const remLower = (c.remarks || '').toLowerCase();
+        let remClass = 'status-READY';
+        if (remLower === 'done' || remLower === 'completed') remClass = 'status-COMPLETED';
+        else if (remLower === 'permanently closed' || remLower === 'not reachable' || remLower === 'closed') remClass = 'status-FAILED';
+
+        return `
+          <tr>
+            <td style="font-family: 'JetBrains Mono', monospace; font-weight: 600;">#${c.id}</td>
+            <td style="font-weight: 600; color: #fff;">${c.name}</td>
+            <td>${c.industry || '—'}</td>
+            <td>
+              <a href="${c.instagram_url}" target="_blank" rel="noopener" style="color: #60a5fa; text-decoration: underline; font-family: 'JetBrains Mono', monospace; font-size: 0.75rem;">
+                ${c.username ? '@' + c.username : c.instagram_url}
+              </a>
+            </td>
+            <td><span class="badge-status ${remClass}">${c.remarks}</span></td>
+            <td><span class="badge-status status-${c.task_status}">${c.task_status}</span></td>
+          </tr>
+        `;
+      }).join('');
     }
 
     function renderAccounts(accounts) {

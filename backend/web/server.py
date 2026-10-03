@@ -575,6 +575,54 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             except Exception:
                 pass
 
+        # 12. Ingested Contacts / Leads List
+        contacts_list = []
+        try:
+            cur = conn.execute("""
+                SELECT c.id, c.name, c.instagram_url, c.username, c.notes, c.replied_status, c.created_at,
+                       t.id, t.status, t.scheduled_at
+                FROM contacts c
+                LEFT JOIN tasks t ON c.id = t.contact_id AND t.type = 'MESSAGE'
+                ORDER BY c.created_at DESC
+                LIMIT 50;
+            """)
+            for row in cur.fetchall():
+                remarks_val = "Pending"
+                industry_val = "—"
+                notes_str = row[4] or ""
+                if notes_str.startswith("{"):
+                    try:
+                        import json
+                        nd = json.loads(notes_str)
+                        if isinstance(nd, dict):
+                            remarks_val = nd.get("remarks") or nd.get("Remarks") or "Pending"
+                            industry_val = nd.get("industry") or nd.get("Business Industry") or "—"
+                    except Exception:
+                        pass
+                if remarks_val == "Pending" and "|" in notes_str:
+                    for part in notes_str.split("|"):
+                        p_lower = part.lower()
+                        if "remarks:" in p_lower:
+                            remarks_val = part.split(":", 1)[1].strip()
+                        elif "industry:" in p_lower:
+                            industry_val = part.split(":", 1)[1].strip()
+
+                contacts_list.append({
+                    "id": row[0],
+                    "name": row[1],
+                    "instagram_url": row[2],
+                    "username": row[3],
+                    "industry": industry_val,
+                    "remarks": remarks_val,
+                    "replied_status": row[5],
+                    "created_at": row[6],
+                    "task_id": row[7],
+                    "task_status": row[8] or "READY",
+                    "scheduled_at": row[9],
+                })
+        except Exception as e:
+            logger.debug(f"Contacts query error: {e}")
+
         return {
             "system_state": state_val,
             "state_description": state_descriptions.get(state_val, "System operational"),
@@ -595,6 +643,7 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             "worker_list": workers_list,
             "tasks": task_counts,
             "recent_tasks": tasks_table,
+            "contacts": contacts_list,
             "accounts": accounts_list,
             "browser_sessions": sessions_list,
             "safety": {

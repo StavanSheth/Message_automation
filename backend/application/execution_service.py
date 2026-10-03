@@ -44,6 +44,8 @@ class ExecutionService:
         worker_repo: Optional[Any] = None,
         account_repo: Optional[Any] = None,
         auth_validator: Optional[Any] = None,
+        contact_repo: Optional[Any] = None,
+        source_record_repo: Optional[Any] = None,
     ):
         self.task_repo = task_repo
         self.message_repo = message_repo
@@ -109,6 +111,29 @@ class ExecutionService:
                 self.account_repo = None
         else:
             self.account_repo = None
+
+        # Contact & SourceRecord repos for updating lead remarks & write-back
+        if contact_repo is not None:
+            self.contact_repo = contact_repo
+        elif db:
+            from backend.repositories.contact_repo import ContactRepository
+            try:
+                self.contact_repo = ContactRepository(db)
+            except Exception:
+                self.contact_repo = None
+        else:
+            self.contact_repo = None
+
+        if source_record_repo is not None:
+            self.source_record_repo = source_record_repo
+        elif db:
+            from backend.repositories.source_record_repo import SourceRecordRepository
+            try:
+                self.source_record_repo = SourceRecordRepository(db)
+            except Exception:
+                self.source_record_repo = None
+        else:
+            self.source_record_repo = None
 
         self.throttling_service = throttling_service
 
@@ -434,6 +459,35 @@ class ExecutionService:
                             self.execution_identity_repo.update_state(exec_key, state="SENT", outcome="CONFIRMED_SENT")
                         except Exception:
                             pass
+                    # Auto-update lead remarks to Done and write back to source spreadsheet
+                    if getattr(self, "contact_repo", None):
+                        try:
+                            contact = self.contact_repo.get_by_id(task.contact_id)
+                            if contact:
+                                notes_dict = {}
+                                if contact.notes:
+                                    try:
+                                        import json
+                                        notes_dict = json.loads(contact.notes)
+                                        if not isinstance(notes_dict, dict):
+                                            notes_dict = {"notes": str(contact.notes)}
+                                    except Exception:
+                                        notes_dict = {"notes": str(contact.notes)}
+                                notes_dict["remarks"] = "Done"
+                                import json
+                                contact.notes = json.dumps(notes_dict)
+                                self.contact_repo.update(contact)
+
+                                if getattr(self, "source_record_repo", None) and contact.source_record_id:
+                                    srec = self.source_record_repo.get_by_id(contact.source_record_id)
+                                    if srec and srec.source_identifier and srec.source_identifier.endswith(".xlsx"):
+                                        import os
+                                        if os.path.exists(srec.source_identifier):
+                                            from backend.sources.xlsx.adapter import LocalXlsxSource
+                                            xlsx_adapter = LocalXlsxSource(srec.source_identifier)
+                                            xlsx_adapter.update_record(srec.row_index, {"remarks": "Done"})
+                        except Exception as e:
+                            logger.warning(f"Could not auto-update lead remarks on task completion: {e}")
                 else:
                     if self.throttling_service:
                         try:
