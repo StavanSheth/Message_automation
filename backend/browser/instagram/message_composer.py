@@ -18,15 +18,21 @@ class InstagramMessageComposer:
         template: str,
         contact_name: Optional[str] = None,
         contact_username: Optional[str] = None,
+        allow_fallback_name: bool = True,
     ) -> str:
         """Render template placeholders into validated message body."""
         if not template or not isinstance(template, str) or not template.strip():
             raise AutomationError(code=ErrorCode.INVALID_DATA, message="Message template cannot be empty")
         body = template
-        if contact_name:
-            body = body.replace("{{name}}", contact_name).replace("{name}", contact_name)
-        if contact_username:
-            body = body.replace("{{username}}", contact_username).replace("{username}", contact_username)
+        if contact_name and contact_name.strip():
+            body = body.replace("{{name}}", contact_name.strip()).replace("{name}", contact_name.strip())
+        elif allow_fallback_name:
+            fallback = contact_username.strip() if contact_username and contact_username.strip() else "there"
+            body = body.replace("{{name}}", fallback).replace("{name}", fallback)
+
+        if contact_username and contact_username.strip():
+            body = body.replace("{{username}}", contact_username.strip()).replace("{username}", contact_username.strip())
+
         body = body.strip()
         if not body:
             raise AutomationError(code=ErrorCode.INVALID_DATA, message="Message body cannot be whitespace-only")

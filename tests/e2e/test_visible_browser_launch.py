@@ -23,8 +23,7 @@ def test_visible_browser_lifecycle_and_process_management():
     10. Close cleanly and verify process cleanup.
     """
     diag = BrowserRuntimeValidator.validate_runtime()
-    if not diag.can_launch:
-        pytest.skip(f"Browser launch unavailable in environment: {diag.actionable_fix}")
+    assert diag.can_launch is True, f"Browser launch verification failed: {diag.error_message} (Fix: {diag.actionable_fix})"
 
     # Test visible launch unless CI environment sets headless
     is_headless = os.getenv("CI", "false").lower() == "true"
@@ -36,14 +35,18 @@ def test_visible_browser_lifecycle_and_process_management():
         viewport_height=800,
     )
     driver = PlaywrightBrowserDriver(cfg)
+    captured_pid = None
 
     try:
         # Launch browser
         driver.launch()
 
-        # Verify process PID exists and is positive integer
-        assert driver.pid is not None, "Browser process PID must be captured"
-        assert isinstance(driver.pid, int) and driver.pid > 0, f"Invalid PID: {driver.pid}"
+        # Verify process PID exists, is positive integer, and is alive in OS
+        captured_pid = driver.pid
+        assert captured_pid is not None, "Browser process PID must be captured"
+        assert isinstance(captured_pid, int) and captured_pid > 0, f"Invalid PID: {captured_pid}"
+        from backend.browser.driver import is_pid_alive
+        assert is_pid_alive(captured_pid) is True, f"Process with PID {captured_pid} must be alive"
 
         # Verify context and page exist
         assert driver._context is not None, "Browser context must exist"
@@ -76,3 +79,14 @@ def test_visible_browser_lifecycle_and_process_management():
     # Verify process terminated cleanly
     assert driver.is_connected() is False, "Driver must report disconnected after close"
     assert driver.pid is None, "PID must be reset to None after close"
+    from backend.browser.driver import is_pid_alive
+    import time
+    if captured_pid:
+        deadline = time.time() + 5.0
+        terminated = False
+        while time.time() < deadline:
+            if not is_pid_alive(captured_pid):
+                terminated = True
+                break
+            time.sleep(0.1)
+        assert terminated is True, f"Process PID {captured_pid} must be terminated after shutdown within 5s"

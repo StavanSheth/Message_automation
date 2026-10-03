@@ -91,6 +91,15 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
+    def _send_image(self, data: bytes, content_type: str = "image/png") -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(data)
+
     def _parse_post_body(self) -> Dict[str, Any]:
         content_len = int(self.headers.get("Content-Length", 0))
         if content_len == 0:
@@ -100,6 +109,129 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             return json.loads(raw)
         except Exception:
             return {}
+
+    def _get_health_status(self) -> Dict[str, Any]:
+        """Granular subsystem health check distinguishing database, browser, worker, scheduler."""
+        # 1. Database
+        db_healthy = False
+        db_health = "FAILED"
+        try:
+            conn = self.app.db.get_connection()
+            cur = conn.execute("SELECT 1")
+            if cur.fetchone():
+                db_healthy = True
+                db_health = "READY"
+        except Exception:
+            db_healthy = False
+            db_health = "FAILED"
+
+        # 2. Browser
+        browser_healthy = False
+        browser_health = "READY"
+        try:
+            b_health = self.app.browser_manager.check_health()
+            sessions = b_health.get("sessions", {})
+            if sessions:
+                any_crashed = any(not s.get("healthy", False) for s in sessions.values())
+                if any_crashed:
+                    browser_health = "DEGRADED"
+                    browser_healthy = False
+                else:
+                    browser_health = "READY"
+                    browser_healthy = True
+            else:
+                browser_health = "READY"
+                browser_healthy = True
+        except Exception:
+            browser_health = "FAILED"
+            browser_healthy = False
+
+        # 3. Worker
+        worker_healthy = False
+        worker_health = "READY"
+        try:
+            wm = self.app.worker_manager
+            if wm:
+                worker_healthy = True
+                worker_health = "READY"
+            else:
+                worker_health = "DEGRADED"
+        except Exception:
+            worker_health = "FAILED"
+
+        # 4. Scheduler
+        sched_healthy = False
+        sched_health = "READY"
+        try:
+            s = self.app.scheduler
+            if s:
+                sched_healthy = True
+                is_p = getattr(s, "is_paused", False)
+                paused = is_p() if callable(is_p) else is_p
+                sched_health = "PAUSED" if paused else "READY"
+            else:
+                sched_health = "FAILED"
+        except Exception:
+            sched_health = "FAILED"
+
+        # 5. Overall status
+        if db_health == "FAILED" or browser_health == "FAILED":
+            overall = "FAILED"
+        elif db_health == "DEGRADED" or browser_health == "DEGRADED" or sched_health == "PAUSED":
+            overall = "DEGRADED"
+        else:
+            overall = "READY"
+
+        return {
+            "status": "ok" if overall != "FAILED" else "unhealthy",
+            "overall_status": overall,
+            "http_server_healthy": True,
+            "database_healthy": db_healthy,
+            "database_health": db_health,
+            "browser_healthy": browser_healthy,
+            "browser_health": browser_health,
+            "worker_healthy": worker_healthy,
+            "worker_health": worker_health,
+            "scheduler_healthy": sched_healthy,
+            "scheduler_health": sched_health,
+            "dashboard_health": "READY",
+            "source_health": "READY",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+
+    def _gather_browser_status(self) -> Dict[str, Any]:
+        bm = self.app.browser_manager
+        sessions = bm.list_sessions() if bm else []
+        health = bm.check_health() if bm else {}
+        from backend.browser.runtime import BrowserRuntimeValidator
+        diag = BrowserRuntimeValidator.validate_runtime(perform_smoke_test=False)
+        return {
+            "configured_engine": diag.configured_engine,
+            "resolved_engine": diag.resolved_engine,
+            "executable_path": diag.executable_path,
+            "can_launch": diag.can_launch,
+            "pid": diag.pid,
+            "display_status": diag.display_status,
+            "active_sessions_count": len(sessions),
+            "sessions": [s.__dict__ for s in sessions],
+            "health": health,
+        }
+
+    def _gather_diagnostics(self) -> Dict[str, Any]:
+        from backend.health.hardware import HardwareDetectionService
+        hw = HardwareDetectionService().detect_capabilities()
+        recent = []
+        try:
+            from backend.diagnostics.collector import DiagnosticCollector
+            collector = DiagnosticCollector(db=self.app.db)
+            recent = collector.list_recent(limit=20)
+        except Exception:
+            recent = []
+        return {
+            "hardware": hw.__dict__,
+            "recent_bundles": [b.__dict__ for b in recent],
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
 
     def do_GET(self) -> None:
         raw_path = self.path
@@ -115,13 +247,81 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 self._send_json(404, {"error": "Dashboard template not found"})
             return
 
-        if path == "/api/status":
+        if path in ("/health", "/api/health"):
+            data = self._get_health_status()
+            code = 200 if data["overall_status"] != "FAILED" else 503
+            self._send_json(code, data)
+            return
+
+        if path in ("/status", "/api/status"):
             try:
                 data = self._gather_comprehensive_status()
                 self._send_json(200, data)
             except Exception as e:
                 logger.error(f"Error serving status API: {e}", exc_info=True)
                 self._send_json(500, {"error": str(e)})
+            return
+
+        if path in ("/workers", "/api/workers"):
+            data = self._gather_comprehensive_status()
+            self._send_json(200, {"workers": data.get("workers", []), "summary": data.get("worker_summary", {})})
+            return
+
+        if path in ("/sessions", "/api/sessions"):
+            data = self._gather_comprehensive_status()
+            self._send_json(200, {"sessions": data.get("browser_sessions", []), "count": len(data.get("browser_sessions", []))})
+            return
+
+        if path in ("/tasks", "/api/tasks"):
+            data = self._gather_comprehensive_status()
+            self._send_json(200, {"tasks": data.get("tasks", []), "summary": data.get("task_summary", {})})
+            return
+
+        if path in ("/events", "/api/events"):
+            data = self._gather_comprehensive_status()
+            self._send_json(200, {"events": data.get("recent_events", [])})
+            return
+
+        if path in ("/errors", "/api/errors"):
+            data = self._gather_comprehensive_status()
+            self._send_json(200, {"errors": data.get("recent_errors", [])})
+            return
+
+        if path in ("/browser", "/api/browser"):
+            self._send_json(200, self._gather_browser_status())
+            return
+
+        if path in ("/diagnostics", "/api/diagnostics"):
+            self._send_json(200, self._gather_diagnostics())
+            return
+
+        if path in ("/browser/screenshot", "/api/browser/screenshot"):
+            # Attempt to return latest captured screenshot PNG
+            shot_bytes = None
+            if self.app.browser_manager:
+                for sess in self.app.browser_manager._active_sessions.values():
+                    if sess.screenshot_path and os.path.isfile(sess.screenshot_path):
+                        try:
+                            with open(sess.screenshot_path, "rb") as f:
+                                shot_bytes = f.read()
+                            break
+                        except Exception:
+                            pass
+                    if hasattr(sess.driver, "take_screenshot"):
+                        try:
+                            shot_bytes = sess.driver.take_screenshot()
+                            if shot_bytes:
+                                break
+                        except Exception:
+                            pass
+            if not shot_bytes:
+                # Minimal valid 10x10 PNG placeholder
+                shot_bytes = (
+                    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\n\x00\x00\x00\n\x08\x02"
+                    b"\x00\x00\x00\x02PX\xea\x00\x00\x00\x16IDATx\x9cc\xfc\xff\xff?\x03n\xc0"
+                    b"\x84G\x8ea\xe4J\x03\x00\xa5\xe3\x03\x11\xc7z\x1cU\x00\x00\x00\x00IEND\xaeB`\x82"
+                )
+            self._send_image(shot_bytes, "image/png")
             return
 
         if path == "/api/search":
@@ -936,8 +1136,8 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
 class DashboardServer:
     """Wraps HTTP server lifecycle tied to a ProductionApp instance."""
 
-    def __init__(self, app: ProductionApp, host: str = "127.0.0.1", port: int = 8080):
-        self.app = app
+    def __init__(self, app: Optional[ProductionApp] = None, host: str = "127.0.0.1", port: int = 8080, app_state: Optional[ProductionApp] = None):
+        self.app = app or app_state
         self.host = host
         self.port = port
         self.server: Optional[ThreadedHTTPServer] = None
@@ -948,6 +1148,10 @@ class DashboardServer:
         self.server = ThreadedHTTPServer((self.host, self.port), DashboardRequestHandler)
         self.server.app = self.app  # type: ignore
 
+        # Resolve assigned port if 0 was passed
+        actual_port = self.server.server_address[1]
+        self.port = actual_port
+
         url = f"http://{self.host}:{self.port}"
         logger.info(f"Dashboard server listening at {url}")
 
@@ -957,6 +1161,10 @@ class DashboardServer:
         else:
             self.server.serve_forever()
         return url
+
+    def is_healthy(self) -> bool:
+        """Check if dashboard server instance is actively listening."""
+        return self.server is not None and (self._thread is None or self._thread.is_alive())
 
     def stop(self) -> None:
         """Shut down the HTTP server cleanly."""

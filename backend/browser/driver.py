@@ -167,7 +167,34 @@ def find_browser_executable() -> Optional[str]:
     for c in candidates:
         if c and os.path.isfile(c):
             return c
-    return None
+def is_pid_alive(pid: Optional[int]) -> bool:
+    """Reliably check whether a process with the given PID is currently alive on Windows or Unix."""
+    if pid is None or pid <= 0:
+        return False
+    try:
+        import psutil
+        p = psutil.Process(pid)
+        return p.is_running() and p.status() != psutil.STATUS_ZOMBIE
+    except Exception:
+        pass
+    try:
+        if os.name == "nt":
+            import ctypes
+            kernel32 = ctypes.windll.kernel32
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            process = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+            if process != 0:
+                exit_code = ctypes.c_ulong()
+                kernel32.GetExitCodeProcess(process, ctypes.byref(exit_code))
+                kernel32.CloseHandle(process)
+                # STILL_ACTIVE in Windows is 259 (0x103)
+                return exit_code.value == 259
+            return False
+        else:
+            os.kill(pid, 0)
+            return True
+    except (OSError, ProcessLookupError):
+        return False
 
 
 class PlaywrightBrowserDriver(BrowserDriver):
@@ -192,6 +219,16 @@ class PlaywrightBrowserDriver(BrowserDriver):
         self._console_errors: List[str] = []
         self._network_failures: List[Dict[str, Any]] = []
         self.pid: Optional[int] = None
+        self.pid_status: str = "not_started"
+
+    def is_process_alive(self) -> bool:
+        """Check if underlying browser process is actively running."""
+        if self.pid is None:
+            return False
+        alive = is_pid_alive(self.pid)
+        if not alive:
+            self.pid_status = "exited"
+        return alive
 
     def initialize(self) -> None:
         """Deterministic startup stage 1: initialize worker thread."""
@@ -228,6 +265,9 @@ class PlaywrightBrowserDriver(BrowserDriver):
     def _dispatch(self, fn, *args, **kwargs) -> Any:
         if not self._worker_thread or not self._worker_thread.is_alive():
             raise BrowserCrashError("Browser worker thread is not running")
+        if self.pid is not None and not self.is_process_alive() and getattr(fn, "__name__", "") not in ("_raw_close", "_raw_is_connected"):
+            self.pid_status = "exited"
+            raise BrowserCrashError(f"Browser process (PID {self.pid}) has exited unexpectedly")
         if threading.get_ident() == self._thread_id:
             return fn(*args, **kwargs)
         result_holder: Dict[str, Any] = {}
@@ -341,7 +381,9 @@ class PlaywrightBrowserDriver(BrowserDriver):
             self._page = self._context.new_page()
             self._setup_page_listeners(self._page)
 
-        # Extract underlying browser process PID
+        # Extract and validate underlying browser process PID
+        self.pid = None
+        self.pid_status = "pid_unavailable"
         try:
             conn = None
             if self._context and hasattr(self._context, "_impl_obj"):
@@ -351,12 +393,17 @@ class PlaywrightBrowserDriver(BrowserDriver):
             if conn:
                 transport = getattr(conn, "_transport", None)
                 proc = getattr(transport, "_proc", None)
-                if proc and hasattr(proc, "pid"):
+                if proc and hasattr(proc, "pid") and proc.pid:
                     self.pid = proc.pid
+                    if is_pid_alive(self.pid):
+                        self.pid_status = "active"
+                    else:
+                        self.pid_status = "exited"
         except Exception:
             self.pid = None
+            self.pid_status = "pid_unavailable"
 
-        logger.info("Playwright browser launched successfully", browser_type=b_type, pid=self.pid)
+        logger.info("Playwright browser launched successfully", browser_type=b_type, pid=self.pid, pid_status=self.pid_status)
 
     def create_context(self, profile_path: Optional[str] = None) -> None:
         """Deterministic startup stage 3: create context."""
@@ -391,6 +438,9 @@ class PlaywrightBrowserDriver(BrowserDriver):
             return False
 
     def _raw_is_connected(self) -> bool:
+        if self.pid is not None and not is_pid_alive(self.pid):
+            self.pid_status = "exited"
+            return False
         if self._is_persistent:
             return self._context is not None and len(self._context.pages) > 0
         return self._browser is not None and self._browser.is_connected()
@@ -584,3 +634,7 @@ class PlaywrightBrowserDriver(BrowserDriver):
             self._playwright = None
 
         self.pid = None
+
+
+# Alias for backward compatibility and test consistency
+PlaywrightDriver = PlaywrightBrowserDriver

@@ -53,15 +53,15 @@ from backend.domain.enums import (
 
 
 @pytest.mark.e2e
-def test_complete_message_workflow_e2e():
+def test_synthetic_message_workflow_e2e():
     """
-    Executes real browser and database message automation pipeline without mocking
-    core Playwright, browser context, DOM evaluation, or database transactions.
+    [SYNTHETIC WORKFLOW - data:text/html deterministic DOM simulation]
+    Executes complete pipeline logic with simulated Instagram DOM structures
+    using real Chromium / Playwright driver, database, and repository layers.
     """
     # 1. Environment & Runtime Validation
     diag = BrowserRuntimeValidator.validate_runtime()
-    if not diag.can_launch:
-        pytest.skip(f"Browser runtime unavailable: {diag.actionable_fix}")
+    assert diag.can_launch is True, f"Browser runtime unavailable: {diag.actionable_fix}"
 
     tmp_dir = tempfile.mkdtemp()
     db_path = os.path.join(tmp_dir, "e2e_workflow.db")

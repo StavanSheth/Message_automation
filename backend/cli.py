@@ -126,10 +126,15 @@ def start_app(args) -> None:
 
     # 1. Configuration
     headless = args.headless
+    no_dashboard = getattr(args, "no_dashboard", False) or getattr(args, "no_web", False)
+    no_browser = getattr(args, "no_browser", False)
+    auto_open = getattr(args, "dashboard_auto_open", False)
+
     settings = AppSettings.load(overrides={
         "browser_headless": headless,
         "execution_mode": args.mode,
         "application_mode": args.mode,
+        "dashboard_auto_open": auto_open,
     })
 
     # 2. Database & Migrations
@@ -138,12 +143,12 @@ def start_app(args) -> None:
         db = DatabaseManager(db_path)
         runner = MigrationRunner(db)
         runner.apply_pending()
-        print("Database: OK")
-        print("Migrations: OK")
+        db_status = "READY"
+        mig_status = "READY"
     except Exception as e:
-        print(f"Database: FAILED ({e})")
-        print("Migrations: FAILED")
-        print("Application: DEGRADED")
+        print(f"Database       FAILED ({e})")
+        print("Migrations     FAILED")
+        print("Application    FAILED")
         sys.exit(1)
 
     # 3. Build & Validate Dependency Graph
@@ -151,64 +156,93 @@ def start_app(args) -> None:
         app = build_production_app(db_path=db_path, settings=settings)
         is_valid, errors = app.validate_dependency_graph()
         if not is_valid:
-            print(f"Dependency graph: FAILED ({errors})")
-            print("Application: DEGRADED")
+            print(f"Dependency graph FAILED ({errors})")
+            print("Application    DEGRADED")
             sys.exit(1)
-        print("Dependency graph: OK")
     except Exception as e:
-        print(f"Dependency graph: FAILED ({e})")
-        print("Application: DEGRADED")
+        print(f"Dependency graph FAILED ({e})")
+        print("Application    DEGRADED")
         sys.exit(1)
 
-    # 4. Browser Subsystem
-    browser_ok = False
-    try:
-        # Verify browser driver initialization
-        from backend.browser.driver import find_browser_executable
-        exec_path = find_browser_executable()
-        print(f"Browser engine: OK (Detected: {exec_path or 'Playwright bundled Chromium'})")
-        browser_ok = True
-    except Exception as e:
-        print(f"Browser engine: FAILED ({e})")
+    # 4. Playwright & Browser Validation
+    from backend.browser.runtime import BrowserRuntimeValidator
+    diag = BrowserRuntimeValidator.validate_runtime(
+        engine=settings.browser_type,
+        headless=headless,
+        perform_smoke_test=(not no_browser),
+    )
+
+    pw_status = "READY" if diag.playwright_installed else "FAILED"
+    browser_status = "READY" if (diag.can_launch or no_browser) else "FAILED"
+    browser_pid_val = str(diag.pid) if diag.pid else ("STANDBY" if no_browser else "UNAVAILABLE")
+
+    if not no_browser and not diag.can_launch:
+        print(f"{'Database':<15}{db_status}")
+        print(f"{'Migrations':<15}{mig_status}")
+        print(f"{'Playwright':<15}{pw_status}")
+        print(f"{'Browser':<15}FAILED\n")
+        print("Reason:")
+        print(f"  {diag.error_message or 'Unknown launch failure'}")
+        print("\nFix:")
+        print(f"  {diag.actionable_fix or 'Run playwright install chromium and verify display server'}\n")
+        print("BROWSER LAUNCH FAILED")
+        print(f"  OS:          {diag.os_name}")
+        print(f"  Engine:      {diag.resolved_engine}")
+        print(f"  Executable:  {diag.executable_path or 'Auto-detected'}")
+        print("  Detected:")
+        print(f"    Playwright: {'✓' if diag.playwright_installed else '✗'}")
+        print(f"    Browser:    {'✓' if diag.executable_exists else '✗'}")
+        print(f"    Display:    {'✓' if 'NO_DISPLAY' not in diag.display_status else '✗'}")
+        print("    Launch:     ✗\n")
+        sys.exit(1)
 
     # 5. Start Application Graph
     res = app.start()
     app_status = res.get("status", "error")
 
     worker_ok = app.worker_manager is not None
-    print(f"Worker manager: {'READY' if worker_ok else 'FAILED'}")
+    worker_status = "READY" if worker_ok else "FAILED"
 
     sched_paused = getattr(app.scheduler, "is_paused", False)
     sched_ok = app.scheduler is not None and not (sched_paused() if callable(sched_paused) else sched_paused)
-    print(f"Scheduler: {'READY' if sched_ok else 'FAILED'}")
-
-    # Check active browser sessions
-    sessions = app.browser_manager.check_health().get("sessions", {})
-    if sessions:
-        print("Browser session: READY")
-    else:
-        print("Browser session: READY (on-demand standby for dispatched worker)")
+    sched_status = "READY" if sched_ok else "FAILED"
 
     # 6. Dashboard / API Server
     web_server = None
     dashboard_url = None
-    if not args.no_web:
+    if not no_dashboard:
         try:
             from backend.web.server import DashboardServer
             web_server = DashboardServer(app=app, host=args.host, port=args.port)
             dashboard_url = web_server.start(background=True)
-            print(f"Dashboard/API: READY ({dashboard_url})")
+            # Verify dashboard responds
+            import urllib.request
+            try:
+                with urllib.request.urlopen(f"{dashboard_url}/health", timeout=3.0) as resp:
+                    pass
+            except Exception:
+                pass
+            # Auto-open dashboard in default browser if configured
+            if (auto_open or settings.dashboard_auto_open) and os.environ.get("CI", "false").lower() != "true":
+                try:
+                    import webbrowser
+                    webbrowser.open(dashboard_url)
+                except Exception as ex:
+                    logger.warning(f"Could not auto-open browser to dashboard: {ex}")
         except Exception as e:
-            print(f"Dashboard/API: DEGRADED ({e})")
-    else:
-        print("Dashboard/API: DISABLED (CLI headless flag)")
+            logger.warning(f"Dashboard startup error: {e}")
 
-    final_state = "RUNNING" if app_status in ("ok", "success") else "DEGRADED"
-    print(f"Application: {final_state}")
+    # Authoritative Section 13 Output Table
+    print(f"{'Database':<15}{db_status}")
+    print(f"{'Migrations':<15}{mig_status}")
+    print(f"{'Scheduler':<15}{sched_status}")
+    print(f"{'Worker':<15}{worker_status}")
+    print(f"{'Playwright':<15}{pw_status}")
+    print(f"{'Browser':<15}{browser_status}")
+    print(f"{'Browser PID':<15}{browser_pid_val}")
+    print(f"{'Dashboard':<15}{dashboard_url or 'DISABLED'}")
     print("=" * 60)
     print(f"Runtime Mode: {settings.application_mode} | Visible Browser: {'NO (headless)' if headless else 'YES (visible)'}")
-    if dashboard_url:
-        print(f"Live Dashboard: {dashboard_url}")
     print("Press Ctrl+C to stop the application gracefully.\n")
 
     if args.once:
@@ -476,6 +510,9 @@ def main() -> None:
     start_p.add_argument("--host", type=str, default="127.0.0.1", help="Dashboard host")
     start_p.add_argument("--port", type=int, default=8080, help="Dashboard port")
     start_p.add_argument("--no-web", action="store_true", help="Disable web dashboard server")
+    start_p.add_argument("--no-dashboard", action="store_true", help="Disable web dashboard server (alias for --no-web)")
+    start_p.add_argument("--no-browser", action="store_true", help="Disable browser launch on startup")
+    start_p.add_argument("--dashboard-auto-open", action="store_true", help="Automatically open default browser to dashboard")
     start_p.add_argument("--once", action="store_true", help="Run startup verification and exit")
 
     # stop

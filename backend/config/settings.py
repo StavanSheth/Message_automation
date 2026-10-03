@@ -33,6 +33,7 @@ class AppSettings:
     browser_startup_timeout: int = 30
     browser_keep_open: bool = False
     browser_devtools: bool = False
+    dashboard_auto_open: bool = False  # Automatically open dashboard in default browser on start
     worker_heartbeat_interval: int = 15
     worker_stale_timeout: int = 60
     spreadsheet_navigation_timeout: int = 30

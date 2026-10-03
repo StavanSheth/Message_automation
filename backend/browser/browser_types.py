@@ -29,13 +29,18 @@ class SessionStatus(str, Enum):
     NOT_STARTED = "NOT_STARTED"
     CREATED = "CREATED"
     STARTING = "STARTING"
-    RUNNING = "RUNNING"
+    OPEN = "OPEN"
     READY = "READY"
+    ACTIVE = "ACTIVE"
+    RUNNING = "RUNNING"
     AUTHENTICATED = "AUTHENTICATED"
     BUSY = "BUSY"
     IDLE = "IDLE"
+    PAUSED = "PAUSED"
+    RECOVERING = "RECOVERING"
     STOPPING = "STOPPING"
     STOPPED = "STOPPED"
+    CLOSED = "CLOSED"
     CRASHED = "CRASHED"
     DEGRADED = "DEGRADED"
     AUTH_REQUIRED = "AUTH_REQUIRED"
@@ -72,6 +77,10 @@ class BrowserLaunchConfig:
     user_agent: Optional[str] = None
     executable_path: Optional[str] = None
     extra_args: List[str] = field(default_factory=list)
+
+
+# Alias for backward compatibility
+BrowserConfig = BrowserLaunchConfig
 
 
 @dataclass

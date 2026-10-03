@@ -140,20 +140,164 @@ class BrowserProfileManager:
         profile.status = "INACTIVE"
         return True
 
-    def validate_profile_usability(self, profile_id: str) -> bool:
-        """Validate that persistent profile directory exists and is usable across restarts."""
+    def _get_lock_file(self, profile_path: Path) -> Path:
+        return profile_path / ".profile.lock"
+
+    def _get_account_file(self, profile_path: Path) -> Path:
+        return profile_path / ".account_id"
+
+    def is_locked(self, profile_id: str) -> bool:
+        """Check if profile has an active lock held by a live process."""
         profile = self.get_profile(profile_id)
         if not profile:
             return False
         p = Path(profile.profile_path)
-        if not p.is_dir():
+        lock_file = self._get_lock_file(p)
+        if not lock_file.exists():
             return False
-        # Check readability and writeability
+        try:
+            import json
+            data = json.loads(lock_file.read_text(encoding="utf-8"))
+            pid = data.get("pid")
+            from backend.browser.driver import is_pid_alive
+            if pid and not is_pid_alive(pid):
+                # Stale lock from crashed process
+                lock_file.unlink(missing_ok=True)
+                return False
+            return True
+        except Exception:
+            return False
+
+    def acquire_lock(
+        self, profile_id: str, worker_id: str, account_id: Optional[str] = None
+    ) -> bool:
+        """
+        Acquire an exclusive lock on a browser profile for an assigned worker.
+        Prevents multiple workers or accounts from accessing the same profile simultaneously.
+        """
+        profile = self.get_profile(profile_id)
+        if not profile:
+            raise ValidationError(f"Profile '{profile_id}' not found")
+        p = Path(profile.profile_path)
+        lock_file = self._get_lock_file(p)
+        import json
+
+        if lock_file.exists():
+            try:
+                data = json.loads(lock_file.read_text(encoding="utf-8"))
+                holding_worker = data.get("worker_id")
+                holding_account = data.get("account_id")
+                holding_pid = data.get("pid")
+                from backend.browser.driver import is_pid_alive
+                if holding_pid and is_pid_alive(holding_pid):
+                    if holding_worker == worker_id and (holding_account == account_id or not account_id):
+                        return True
+                    raise ValidationError(
+                        f"Profile '{profile_id}' is locked by worker '{holding_worker}' (PID {holding_pid}) "
+                        f"for account '{holding_account}'. Simultaneous access is forbidden."
+                    )
+                else:
+                    # Clean up stale lock
+                    lock_file.unlink(missing_ok=True)
+            except (json.JSONDecodeError, OSError):
+                lock_file.unlink(missing_ok=True)
+
+        # Validate account ownership if account file exists
+        acc_file = self._get_account_file(p)
+        if account_id:
+            if acc_file.exists():
+                bound_acc = acc_file.read_text(encoding="utf-8").strip()
+                if bound_acc and bound_acc != account_id:
+                    raise ValidationError(
+                        f"Profile '{profile_id}' belongs to account '{bound_acc}', cannot be used by '{account_id}'"
+                    )
+            else:
+                acc_file.write_text(account_id, encoding="utf-8")
+
+        lock_data = {
+            "profile_id": profile_id,
+            "worker_id": worker_id,
+            "account_id": account_id,
+            "pid": os.getpid(),
+            "locked_at": utc_now_iso(),
+        }
+        lock_file.write_text(json.dumps(lock_data), encoding="utf-8")
+        return True
+
+    def release_lock(self, profile_id: str, worker_id: Optional[str] = None) -> bool:
+        """Release exclusive lock on profile if held by worker or unconditionally."""
+        profile = self.get_profile(profile_id)
+        if not profile:
+            return False
+        p = Path(profile.profile_path)
+        lock_file = self._get_lock_file(p)
+        if not lock_file.exists():
+            return True
+        try:
+            if worker_id:
+                import json
+                data = json.loads(lock_file.read_text(encoding="utf-8"))
+                if data.get("worker_id") != worker_id:
+                    return False
+            lock_file.unlink(missing_ok=True)
+            return True
+        except Exception:
+            lock_file.unlink(missing_ok=True)
+            return True
+
+    def validate_profile(
+        self,
+        profile_id: str,
+        expected_account_id: Optional[str] = None,
+        current_worker_id: Optional[str] = None,
+    ) -> tuple[bool, Optional[str]]:
+        """
+        Comprehensive profile validation:
+        - profile exists
+        - profile writable
+        - profile not corrupted
+        - profile belongs to account
+        - profile isn't locked by another worker
+        """
+        profile = self.get_profile(profile_id)
+        if not profile:
+            return False, "profile_does_not_exist"
+        p = Path(profile.profile_path)
+        if not p.is_dir():
+            return False, "profile_directory_missing"
+
+        # Check writeability and corruption
         test_file = p / ".profile_health_check"
         try:
             test_file.write_text("ok", encoding="utf-8")
             test_file.unlink(missing_ok=True)
-            return True
-        except Exception:
-            return False
+        except Exception as e:
+            return False, f"profile_directory_unwritable: {e}"
+
+        # Check account ownership
+        acc_file = self._get_account_file(p)
+        if expected_account_id and acc_file.exists():
+            bound_acc = acc_file.read_text(encoding="utf-8").strip()
+            if bound_acc and bound_acc != expected_account_id:
+                return False, f"account_mismatch: profile bound to {bound_acc}, expected {expected_account_id}"
+
+        # Check lock
+        if self.is_locked(profile_id):
+            if current_worker_id:
+                try:
+                    import json
+                    lock_data = json.loads(self._get_lock_file(p).read_text(encoding="utf-8"))
+                    if lock_data.get("worker_id") != current_worker_id:
+                        return False, f"locked_by_worker_{lock_data.get('worker_id')}"
+                except Exception:
+                    pass
+            else:
+                return False, "profile_locked"
+
+        return True, None
+
+    def validate_profile_usability(self, profile_id: str) -> bool:
+        """Validate that persistent profile directory exists and is usable across restarts."""
+        ok, _ = self.validate_profile(profile_id)
+        return ok
 

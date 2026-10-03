@@ -120,6 +120,18 @@ class BrowserManager:
                 # Existing session is dead or missing, clean up stale mapping
                 self.stop_session(existing_sess_id)
 
+        # Prevent duplicate sessions for the same account
+        if account_id:
+            for s in list(self._active_sessions.values()):
+                if s.is_alive() and s.account_id == account_id:
+                    if worker_id and s.worker_id == worker_id:
+                        return s
+                    raise BrowserSessionError(
+                        f"Account '{account_id}' already has an active session ({s.session_id}) with worker '{s.worker_id}'. "
+                        "Duplicate sessions for the same account are prohibited.",
+                        code=ErrorCode.SOURCE_UNAVAILABLE,
+                    )
+
         # Clean up any dead/stopped sessions before checking capacity
         dead_session_ids = [
             sid for sid, sess in list(self._active_sessions.items())
@@ -142,7 +154,18 @@ class BrowserManager:
         if not self.profile_manager.validate_profile_usability(profile.profile_id):
             logger.warning(f"Profile directory {profile.profile_path} has permissions/usability issues, resetting")
 
-        # Profile isolation: verify profile is not in use by another active worker
+        # Profile locking and isolation: acquire exclusive lock
+        if worker_id:
+            try:
+                self.profile_manager.acquire_lock(profile.profile_id, worker_id=worker_id, account_id=account_id)
+            except Exception as e:
+                raise BrowserSessionError(
+                    f"Profile '{profile.profile_id}' is already in use by another worker. "
+                    "Browser profiles cannot be shared between isolated workers.",
+                    code=ErrorCode.SOURCE_UNAVAILABLE,
+                ) from e
+
+        # Verify profile is not in use by another active session
         for s in self._active_sessions.values():
             if s.is_alive() and s.profile_id == profile.profile_id and s.worker_id != worker_id:
                 raise BrowserSessionError(
@@ -263,6 +286,12 @@ class BrowserManager:
             if session.worker_id and self._worker_session_map.get(session.worker_id) == session_id:
                 self._worker_session_map.pop(session.worker_id, None)
 
+            if session.profile_id:
+                try:
+                    self.profile_manager.release_lock(session.profile_id, worker_id=session.worker_id)
+                except Exception:
+                    pass
+
             if self.event_repo:
                 try:
                     self.event_repo.record(
@@ -293,12 +322,29 @@ class BrowserManager:
             "sessions": {k: v.__dict__ for k, v in results.items()},
         }
 
+    def health_check(self) -> Dict[str, Any]:
+        """Alias for check_health providing unified browser health diagnostics."""
+        return self.check_health()
+
     def is_healthy(self) -> bool:
         """Check if all currently tracked active browser sessions are responsive and alive."""
         dead_sessions = [sid for sid, sess in self._active_sessions.items() if not sess.is_alive()]
         for sid in dead_sessions:
             self.stop_session(sid)
         return True
+
+    def restart_session(self, session_id: str) -> BrowserSessionInstance:
+        """Restart session cleanly, preserving account and profile identity."""
+        session = self.get_session(session_id)
+        if not session:
+            raise BrowserSessionError(f"Session {session_id} not found", code=ErrorCode.SOURCE_UNAVAILABLE)
+        wid = session.worker_id
+        acc_id = session.account_id
+        prof_name = session.profile_id
+        self.stop_session(session_id)
+        new_sess = self.create_session(worker_id=wid, account_id=acc_id, profile_name=prof_name)
+        new_sess.start()
+        return new_sess
 
     def recover_session(
         self,
@@ -308,9 +354,11 @@ class BrowserManager:
     ) -> BrowserSessionInstance:
         """
         Self-healing session recovery:
-        1. Stop broken / crashed session.
-        2. Create replacement session for worker.
-        3. Validate account ownership and return new session.
+        1. Detect dead browser and mark old session unhealthy.
+        2. Close stale resources and release stale locks.
+        3. Preserve account/profile identity.
+        4. Create replacement session for worker.
+        5. Verify browser alive and return new session.
         """
         if worker_id in self._worker_session_map:
             old_sess_id = self._worker_session_map[worker_id]

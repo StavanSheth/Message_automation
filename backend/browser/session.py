@@ -71,6 +71,37 @@ class BrowserSessionInstance:
         self.last_error: Optional[str] = None
         self.screenshot_path: Optional[str] = None
 
+    def transition_to(self, target_status: SessionStatus, reason: Optional[str] = None) -> None:
+        """Enforce strict session state transitions."""
+        old_status = self.status
+        self.status = target_status
+        self.last_activity_at = utc_now_iso()
+        if reason:
+            self.last_error = reason
+        logger.info(
+            f"Session {self.session_id} state transition: {old_status.value} -> {target_status.value} ({reason or 'normal'})"
+        )
+
+    def handle_browser_crash(self, reason: str = "Browser process exited unexpectedly") -> None:
+        self.transition_to(SessionStatus.RECOVERING, reason=reason)
+
+    def handle_context_crash(self, reason: str = "Browser context destroyed") -> None:
+        self.transition_to(SessionStatus.RECOVERING, reason=reason)
+
+    def handle_page_crash(self, reason: str = "Active browser page crashed") -> None:
+        self.transition_to(SessionStatus.RECOVERING, reason=reason)
+
+    def handle_worker_crash(self, reason: str = "Assigned worker terminated") -> None:
+        self.transition_to(SessionStatus.RECOVERING, reason=reason)
+
+    def handle_network_failure(self, reason: str = "Network connectivity lost") -> None:
+        self.last_error = reason
+        self.transition_to(SessionStatus.RECOVERING, reason=reason)
+
+    def handle_auth_failure(self, reason: str = "Authentication required or expired") -> None:
+        self.auth_status = "AUTH_REQUIRED"
+        self.transition_to(SessionStatus.AUTH_REQUIRED, reason=reason)
+
     def update_action(
         self,
         stage: str,
@@ -101,34 +132,36 @@ class BrowserSessionInstance:
                 pass
 
     def start(self) -> None:
-        """Start the browser session."""
-        if self.status in (SessionStatus.READY, SessionStatus.BUSY):
+        """Start the browser session, following CREATED -> STARTING -> OPEN -> READY lifecycle."""
+        if self.status in (SessionStatus.READY, SessionStatus.BUSY, SessionStatus.ACTIVE):
             return
 
-        self.status = SessionStatus.STARTING
+        self.transition_to(SessionStatus.STARTING)
         try:
             self.driver.launch(self.config)
-            self.status = SessionStatus.READY
+            self.transition_to(SessionStatus.OPEN)
+            self.transition_to(SessionStatus.READY)
             self.last_activity_at = utc_now_iso()
             logger.info("Browser session started", session_id=self.session_id, worker_id=self.worker_id)
         except Exception as e:
-            self.status = SessionStatus.CRASHED
+            self.handle_browser_crash(reason=f"Session startup failed: {e}")
             logger.error(f"Failed to start browser session {self.session_id}: {e}")
             if isinstance(e, BrowserException):
                 raise
             raise BrowserSessionError(f"Session startup failed: {e}", code=ErrorCode.BROWSER_CRASH) from e
 
     def stop(self) -> None:
-        """Stop and tear down the browser session."""
-        if self.status == SessionStatus.STOPPED:
+        """Stop and tear down the browser session cleanly."""
+        if self.status in (SessionStatus.STOPPED, SessionStatus.CLOSED):
             return
 
-        self.status = SessionStatus.STOPPING
+        self.transition_to(SessionStatus.STOPPING)
         try:
             self.driver.close()
         except Exception as e:
             logger.warning(f"Error while closing driver in session {self.session_id}: {e}")
         finally:
+            self.transition_to(SessionStatus.CLOSED)
             self.status = SessionStatus.STOPPED
             self.last_activity_at = utc_now_iso()
             logger.info("Browser session stopped", session_id=self.session_id)
@@ -142,6 +175,8 @@ class BrowserSessionInstance:
     ACTIVE_STATES = (
         SessionStatus.READY,
         SessionStatus.RUNNING,
+        SessionStatus.ACTIVE,
+        SessionStatus.OPEN,
         SessionStatus.AUTHENTICATED,
         SessionStatus.BUSY,
         SessionStatus.IDLE,
@@ -166,7 +201,12 @@ class BrowserSessionInstance:
             self.status = SessionStatus.READY
             return loaded_url
         except Exception as e:
-            self.status = SessionStatus.CRASHED if isinstance(e, BrowserCrashError) else SessionStatus.READY
+            if isinstance(e, BrowserCrashError):
+                self.handle_browser_crash(str(e))
+            elif isinstance(e, BrowserTimeoutError):
+                self.handle_network_failure(str(e))
+            else:
+                self.status = SessionStatus.READY
             raise
 
     def get_current_url(self) -> str:

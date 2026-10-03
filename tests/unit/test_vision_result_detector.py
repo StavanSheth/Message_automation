@@ -8,11 +8,11 @@ from backend.vision.ocr import VisionPipeline, StandardVisionService, OCRResult
 from backend.result_detection.detector import VisionResultDetector, ResultCode
 
 
-# Helper to generate a minimal valid 1x1 PNG file
+# Helper to generate a minimal valid PNG file
 VALID_PNG_BYTES = (
-    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
-    b"\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\rIDATx\x9cc`\x00\x00\x00\x02"
-    b"\x00\x01H\xaf\xa4q\x00\x00\x00\x00IEND\xaeB`\x82"
+    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\n\x00\x00\x00\n\x08\x02"
+    b"\x00\x00\x00\x02PX\xea\x00\x00\x00\x16IDATx\x9cc\xfc\xff\xff?\x03n\xc0"
+    b"\x84G\x8ea\xe4J\x03\x00\xa5\xe3\x03\x11\xc7z\x1cU\x00\x00\x00\x00IEND\xaeB`\x82"
 )
 
 
@@ -196,3 +196,55 @@ def test_ocr_engine_unavailable(valid_screenshot):
     assert res.status == "UNKNOWN"
     assert res.confidence == 0.0
     assert res.reason in ("ocr_engine_unavailable", "no_text_detected")
+
+
+def test_valid_jpeg_format(tmp_path):
+    """Vision pipeline processes valid JPEG images correctly."""
+    import io
+    from PIL import Image
+
+    jpeg_path = str(tmp_path / "test_image.jpg")
+    img = Image.new("RGB", (20, 20), color="white")
+    img.save(jpeg_path, format="JPEG")
+
+    pipeline = VisionPipeline(confidence_threshold=0.85)
+
+    def mock_engine(i):
+        return ("Message Sent", 0.95)
+
+    res = pipeline.process(jpeg_path, ocr_engine=mock_engine)
+    assert res.status == "PASS"
+    assert res.classification == "SUCCESS"
+    assert res.confidence == 0.95
+
+
+def test_login_detected(valid_screenshot):
+    """When OCR detects login screen, returns LOGIN_REQUIRED."""
+    pipeline = VisionPipeline(confidence_threshold=0.85)
+
+    def mock_login_engine(img):
+        return ("Log In to Instagram. Switch Accounts.", 0.95)
+
+    detector = VisionResultDetector(vision_pipeline=pipeline)
+    code, conf, reason = detector.detect_with_confidence({
+        "screenshot_path": valid_screenshot,
+        "ocr_engine": mock_login_engine,
+    })
+    assert code == ResultCode.LOGIN_REQUIRED
+    assert conf == 0.95
+
+
+def test_dm_restriction_detected(valid_screenshot):
+    """When OCR detects DM restriction, returns DM_NOT_AVAILABLE."""
+    pipeline = VisionPipeline(confidence_threshold=0.85)
+
+    def mock_dm_engine(img):
+        return ("You can't message this account. Restricted profile.", 0.92)
+
+    detector = VisionResultDetector(vision_pipeline=pipeline)
+    code, conf, reason = detector.detect_with_confidence({
+        "screenshot_path": valid_screenshot,
+        "ocr_engine": mock_dm_engine,
+    })
+    assert code == ResultCode.DM_NOT_AVAILABLE
+    assert conf == 0.92
