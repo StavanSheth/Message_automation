@@ -1198,6 +1198,66 @@
         </div>
       </section>
 
+      <!-- LIVE BROWSER OBSERVABILITY & AGENT VIEW (Section 10, 11, 23) -->
+      <section class="panel" id="live-browser-observability" style="border: 1px solid var(--border-highlight); background: rgba(15, 23, 42, 0.85);">
+        <div class="panel-head">
+          <div style="display:flex; align-items:center; gap:0.6rem;">
+            <span class="panel-title" style="color: #818cf8;">Live Browser Observability (Real-Time Agent View)</span>
+            <span class="badge-status" id="obsBrowserBadge" style="background:rgba(16,185,129,0.2); color:#10b981;">CONNECTED</span>
+          </div>
+          <div class="btn-group">
+            <button class="btn btn-tick" onclick="refreshScreenshot()">Capture Screenshot</button>
+            <button class="btn btn-tick" onclick="toggleAutoScreenshot()" id="autoShotBtn">Live Stream: ON</button>
+          </div>
+        </div>
+        <div style="display: grid; grid-template-columns: 1fr 340px; gap: 1.5rem; margin-top: 0.5rem;">
+          <!-- Viewport Stream / Screenshot -->
+          <div style="background: #000; border: 1px solid var(--border-subtle); border-radius: 8px; overflow: hidden; min-height: 280px; display: flex; align-items: center; justify-content: center; position: relative;">
+            <img id="liveBrowserView" src="/browser/screenshot" alt="Live Browser Viewport" style="max-width: 100%; max-height: 480px; object-fit: contain; display: block;" onerror="this.style.display='none'; document.getElementById('noShotPlaceholder').style.display='flex';" onload="this.style.display='block'; document.getElementById('noShotPlaceholder').style.display='none';">
+            <div id="noShotPlaceholder" style="display: none; flex-direction: column; align-items: center; gap: 0.5rem; color: var(--text-dim); padding: 2rem; text-align: center;">
+              <span style="font-size: 1.8rem;">🖥️</span>
+              <span style="font-size: 0.85rem;">Browser Viewport Standby.<br>Launch automation to stream active Instagram pages live.</span>
+            </div>
+          </div>
+          <!-- Live Worker & Browser telemetry -->
+          <div style="display: flex; flex-direction: column; gap: 0.75rem; font-size: 0.82rem;">
+            <div style="display: flex; justify-content: space-between; border-bottom: 1px solid var(--border-subtle); padding-bottom: 0.4rem;">
+              <span style="color: var(--text-dim);">Worker:</span>
+              <strong id="obsWorkerId" style="font-family:'JetBrains Mono',monospace;">WORKER-001</strong>
+            </div>
+            <div style="display: flex; justify-content: space-between; border-bottom: 1px solid var(--border-subtle); padding-bottom: 0.4rem;">
+              <span style="color: var(--text-dim);">Browser Engine:</span>
+              <span id="obsBrowserEngine" style="font-family:'JetBrains Mono',monospace; color:var(--text-main);">Google Chrome (System)</span>
+            </div>
+            <div style="display: flex; justify-content: space-between; border-bottom: 1px solid var(--border-subtle); padding-bottom: 0.4rem;">
+              <span style="color: var(--text-dim);">Browser PID:</span>
+              <span id="obsBrowserPid" style="font-family:'JetBrains Mono',monospace; color:var(--emerald);">—</span>
+            </div>
+            <div style="display: flex; justify-content: space-between; border-bottom: 1px solid var(--border-subtle); padding-bottom: 0.4rem;">
+              <span style="color: var(--text-dim);">Current URL:</span>
+              <span id="obsCurrentUrl" style="font-family:'JetBrains Mono',monospace; word-break: break-all; max-width: 190px; text-align: right; color:#38bdf8;">https://www.instagram.com/</span>
+            </div>
+            <div style="display: flex; justify-content: space-between; border-bottom: 1px solid var(--border-subtle); padding-bottom: 0.4rem;">
+              <span style="color: var(--text-dim);">Current Stage:</span>
+              <strong id="obsCurrentStage" style="color: #818cf8;">PROFILE_VERIFICATION</strong>
+            </div>
+            <div style="display: flex; justify-content: space-between; border-bottom: 1px solid var(--border-subtle); padding-bottom: 0.4rem;">
+              <span style="color: var(--text-dim);">Current Action:</span>
+              <span id="obsCurrentAction" style="color: var(--text-muted);">Reading target profile</span>
+            </div>
+            <div style="display: flex; justify-content: space-between; border-bottom: 1px solid var(--border-subtle); padding-bottom: 0.4rem;">
+              <span style="color: var(--text-dim);">Elapsed / Active:</span>
+              <span id="obsElapsed" style="font-family:'JetBrains Mono',monospace;">Active</span>
+            </div>
+            <div style="display: flex; gap: 0.5rem; margin-top: 0.5rem;">
+              <button class="btn btn-tick" style="flex:1;" onclick="pauseApplication()">Pause</button>
+              <button class="btn btn-tick" style="flex:1;" onclick="resumeApplication()">Resume</button>
+              <button class="btn btn-tick" style="flex:1;" onclick="refreshScreenshot()">Screenshot</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
       <!-- 7. TASK EXECUTION SECTION -->
       <section class="panel" id="tasks">
         <div class="panel-head">
@@ -1793,6 +1853,7 @@
         // Accounts & Sessions
         renderAccounts(data.accounts || []);
         renderSessions(data.browser_sessions || []);
+        updateLiveObservability(data.browser_sessions || [], data.worker_list || []);
 
         // Cooldowns
         renderCooldowns(data.cooldowns || []);
@@ -2017,6 +2078,52 @@
           <td style="color: ${s.auth_state === 'AUTHENTICATED' || s.auth_state === 'VALID' ? 'var(--emerald)' : 'var(--text-muted)'};">&bull; ${s.auth_state || 'UNKNOWN'}</td>
         </tr>
       `).join('');
+    }
+
+    let autoScreenshotStream = true;
+
+    function refreshScreenshot() {
+      const img = document.getElementById('liveBrowserView');
+      if (img) {
+        img.src = '/browser/screenshot?t=' + Date.now();
+      }
+    }
+
+    function toggleAutoScreenshot() {
+      autoScreenshotStream = !autoScreenshotStream;
+      const btn = document.getElementById('autoShotBtn');
+      if (btn) {
+        btn.innerText = autoScreenshotStream ? 'Live Stream: ON' : 'Live Stream: OFF';
+      }
+    }
+
+    function updateLiveObservability(sessions, workers) {
+      const activeSession = (sessions && sessions.length > 0) ? sessions[0] : null;
+      const activeWorker = (workers && workers.length > 0) ? workers[0] : null;
+
+      if (activeSession) {
+        const badge = document.getElementById('obsBrowserBadge');
+        if (badge) {
+          const isOk = activeSession.browser_state === 'READY' || activeSession.browser_state === 'OPEN' || activeSession.browser_state === 'HEALTHY' || activeSession.browser_state === 'ACTIVE';
+          badge.innerText = isOk ? 'CONNECTED' : (activeSession.browser_state || 'STANDBY');
+          badge.style.background = isOk ? 'rgba(16,185,129,0.2)' : 'rgba(239,68,68,0.2)';
+          badge.style.color = isOk ? '#10b981' : '#f87171';
+        }
+        if (document.getElementById('obsWorkerId')) document.getElementById('obsWorkerId').innerText = activeSession.worker_id || (activeWorker ? activeWorker.id : 'WORKER-001');
+        if (document.getElementById('obsBrowserEngine')) document.getElementById('obsBrowserEngine').innerText = activeSession.browser_type || 'Google Chrome';
+        if (document.getElementById('obsBrowserPid')) document.getElementById('obsBrowserPid').innerText = activeSession.pid || activeSession.browser_pid || '—';
+        if (document.getElementById('obsCurrentUrl')) document.getElementById('obsCurrentUrl').innerText = activeSession.current_url || activeSession.url || 'https://www.instagram.com/';
+        if (document.getElementById('obsCurrentStage')) document.getElementById('obsCurrentStage').innerText = activeSession.current_stage || activeSession.stage || 'PROFILE_VERIFICATION';
+        if (document.getElementById('obsCurrentAction')) document.getElementById('obsCurrentAction').innerText = activeSession.current_action || activeSession.action || 'Reading target profile';
+        if (document.getElementById('obsElapsed')) document.getElementById('obsElapsed').innerText = activeSession.last_activity_at ? activeSession.last_activity_at.substring(11, 19) + ' UTC' : 'Active';
+      } else if (activeWorker) {
+        if (document.getElementById('obsWorkerId')) document.getElementById('obsWorkerId').innerText = activeWorker.id || activeWorker.worker_code || 'WORKER-001';
+        if (document.getElementById('obsCurrentAction')) document.getElementById('obsCurrentAction').innerText = activeWorker.current_task_id ? `Executing Task #${activeWorker.current_task_id}` : 'Idle / Listening for tasks';
+      }
+
+      if (autoScreenshotStream) {
+        refreshScreenshot();
+      }
     }
 
     function renderCooldowns(cooldowns) {

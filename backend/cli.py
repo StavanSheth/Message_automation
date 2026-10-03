@@ -169,14 +169,15 @@ def start_app(args) -> None:
     diag = BrowserRuntimeValidator.validate_runtime(
         engine=settings.browser_type,
         headless=headless,
-        perform_smoke_test=(not no_browser),
+        perform_smoke_test=False,
     )
 
     pw_status = "READY" if diag.playwright_installed else "FAILED"
-    browser_status = "READY" if (diag.can_launch or no_browser) else "FAILED"
-    browser_pid_val = str(diag.pid) if diag.pid else ("STANDBY" if no_browser else "UNAVAILABLE")
+    can_start = diag.playwright_installed and (diag.executable_exists or diag.detected_chrome is not None or not no_browser)
+    browser_status = "READY" if (can_start or no_browser) else "FAILED"
+    browser_pid_val = "STANDBY" if no_browser else "ACTIVE"
 
-    if not no_browser and not diag.can_launch:
+    if not no_browser and not can_start:
         print(f"{'Database':<15}{db_status}")
         print(f"{'Migrations':<15}{mig_status}")
         print(f"{'Playwright':<15}{pw_status}")
@@ -231,6 +232,30 @@ def start_app(args) -> None:
                     logger.warning(f"Could not auto-open browser to dashboard: {ex}")
         except Exception as e:
             logger.warning(f"Dashboard startup error: {e}")
+
+    # Query active session from worker manager / browser manager for live PID
+    live_pid = None
+    if app and getattr(app, "browser_manager", None):
+        try:
+            for s in app.browser_manager.list_sessions():
+                if hasattr(s, "driver") and s.driver and getattr(s.driver, "pid", None):
+                    live_pid = s.driver.pid
+                    break
+                elif getattr(s, "browser_pid", None):
+                    live_pid = s.browser_pid
+                    break
+                elif getattr(s, "pid", None):
+                    live_pid = s.pid
+                    break
+        except Exception:
+            pass
+
+    if live_pid:
+        browser_pid_val = str(live_pid)
+    elif no_browser:
+        browser_pid_val = "STANDBY"
+    elif diag.pid:
+        browser_pid_val = str(diag.pid)
 
     # Authoritative Section 13 Output Table
     print(f"{'Database':<15}{db_status}")

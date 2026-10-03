@@ -57,7 +57,7 @@ class TestBrowserTypes:
     def test_launch_config_defaults(self):
         cfg = BrowserLaunchConfig()
         assert cfg.browser_type == BrowserType.CHROMIUM
-        assert cfg.headless is True
+        assert cfg.headless is False  # Authoritative default matches AppSettings.browser_headless = False
         assert cfg.timeout_seconds == 30
         assert cfg.viewport_width == 1280
 

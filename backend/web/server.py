@@ -773,9 +773,9 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         if self.app.browser_manager:
             for s in self.app.browser_manager.list_sessions():
                 active_session_ids.add(s.session_id)
-                health_val = s.health.status.value if hasattr(s.health, "status") and hasattr(s.health.status, "value") else str(getattr(s.health, "status", "UNKNOWN"))
-                auth_val = s.auth_status.value if hasattr(s.auth_status, "value") else str(s.auth_status)
                 status_val = s.status.value if hasattr(s.status, "value") else str(s.status)
+                health_val = status_val if status_val in ("READY", "OPEN", "ACTIVE", "HEALTHY", "RUNNING") else (str(s.health) if s.health else status_val)
+                auth_val = s.auth_status.value if hasattr(s.auth_status, "value") else str(s.auth_status)
                 sessions_list.append({
                     "id": s.session_id,
                     "worker_id": s.worker_id or "—",

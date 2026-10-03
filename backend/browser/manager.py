@@ -3,6 +3,7 @@
 from typing import Any, Dict, List, Optional
 from backend.browser.browser_types import (
     BrowserType,
+    BrowserEngine,
     SessionStatus,
     BrowserLaunchConfig,
     BrowserHealthResult,
@@ -174,28 +175,48 @@ class BrowserManager:
                     code=ErrorCode.SOURCE_UNAVAILABLE,
                 )
 
-        driver = custom_driver
-        if not driver and self.driver_factory:
-            try:
-                driver = self.driver_factory()
-            except Exception as e:
-                raise BrowserSessionError(
-                    f"Driver initialization failed: {e}",
-                    code=ErrorCode.BROWSER_CRASH,
-                ) from e
+        # Deterministic engine & executable resolution:
+        # Default: System Google Chrome if installed -> Playwright Chromium fallback
+        from backend.browser.runtime import BrowserRuntimeValidator
+        detected_chrome = BrowserRuntimeValidator.find_chrome()
+
+        configured_type = self.settings.browser_type.lower()
+        if detected_chrome and configured_type in ("chromium", "chrome", "system_chrome"):
+            resolved_engine = BrowserEngine.SYSTEM_CHROME
+            resolved_executable = detected_chrome
+        else:
+            resolved_engine = BrowserEngine.PLAYWRIGHT_CHROMIUM
+            resolved_executable = None
 
         launch_config = BrowserLaunchConfig(
-            browser_type=BrowserType(self.settings.browser_type.lower()),
+            browser_type=BrowserType(configured_type if configured_type in BrowserType.__members__.values() else "chromium"),
+            browser_engine=resolved_engine,
             headless=self.settings.browser_headless,
             timeout_seconds=self.settings.browser_startup_timeout,
             profile_directory=profile.profile_path,
+            executable_path=resolved_executable,
         )
+
+        driver = custom_driver
+        if not driver:
+            if self.driver_factory:
+                try:
+                    driver = self.driver_factory()
+                except Exception as e:
+                    raise BrowserSessionError(
+                        f"Driver initialization failed: {e}",
+                        code=ErrorCode.BROWSER_CRASH,
+                    ) from e
+            else:
+                from backend.browser.driver import PlaywrightBrowserDriver
+                driver = PlaywrightBrowserDriver(launch_config)
+                driver.initialize()
 
         session = BrowserSessionInstance(
             session_id=session_id,
             driver=driver,
             worker_id=worker_id,
-            browser_type=BrowserType(self.settings.browser_type.lower()),
+            browser_type=BrowserType(configured_type if configured_type in BrowserType.__members__.values() else "chromium"),
             profile_path=profile.profile_path,
             profile_id=profile.profile_id,
             config=launch_config,

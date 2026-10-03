@@ -43,6 +43,20 @@ class InstagramProfileVerifier:
         4. Persist to VerificationResultRepository if repository is provided.
         Returns: (decision, confidence, signals, result_model)
         """
+        # 1. OCR text extraction from observed or screenshot
+        ocr_text = observed.get("ocr_text")
+        if not ocr_text and observed.get("screenshot_path"):
+            try:
+                from backend.vision.ocr import StandardVisionService
+                vision = StandardVisionService()
+                extracted, ocr_conf, _ = vision.extract_with_confidence(observed["screenshot_path"])
+                if extracted and ocr_conf >= 0.70:
+                    ocr_text = extracted
+                    observed["ocr_text"] = ocr_text
+                    observed["ocr_confidence"] = ocr_conf
+            except Exception as e:
+                logger.debug(f"OCR extraction during verification omitted or failed: {e}")
+
         signals = self.engine.extract_signals(contact, observed)
         confidence = self.engine.calculate_confidence(signals)
         decision = self.engine.decide(confidence, threshold=self.threshold, signals=signals)
@@ -57,6 +71,7 @@ class InstagramProfileVerifier:
                 "is_verified": observed.get("is_verified"),
                 "is_private": observed.get("is_private"),
                 "can_message": observed.get("can_message"),
+                "ocr_text": ocr_text,
             },
             "expected": {
                 "contact_id": contact.id,
@@ -74,7 +89,7 @@ class InstagramProfileVerifier:
             confidence=confidence,
             decision=decision,
             signals_json=json.dumps(signals_payload),
-            ocr_text=None,
+            ocr_text=ocr_text,
             created_at=utc_now_iso(),
         )
 

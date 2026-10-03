@@ -69,7 +69,7 @@ class BrowserEngine(str, Enum):
 class BrowserLaunchConfig:
     browser_type: BrowserType = BrowserType.CHROMIUM
     browser_engine: BrowserEngine = BrowserEngine.PLAYWRIGHT_CHROMIUM
-    headless: bool = True
+    headless: bool = False  # Authoritative default: Visible browser for local development/manual operation
     timeout_seconds: int = 30
     profile_directory: Optional[str] = None
     viewport_width: int = 1280
@@ -77,6 +77,12 @@ class BrowserLaunchConfig:
     user_agent: Optional[str] = None
     executable_path: Optional[str] = None
     extra_args: List[str] = field(default_factory=list)
+
+    def __post_init__(self):
+        import os
+        # Headless override for CI or explicit headless environment variable
+        if os.environ.get("CI", "").lower() == "true" or os.environ.get("HEADLESS", "").lower() == "true":
+            self.headless = True
 
 
 # Alias for backward compatibility

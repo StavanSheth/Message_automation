@@ -73,6 +73,15 @@ class SimpleVerificationEngine(VerificationEngine):
             if not signals["username_match"] and not signals["url_match"]:
                 signals["mismatch"] = True
 
+        # OCR Signal Corroboration
+        if observed.get("ocr_text"):
+            ocr_lower = str(observed["ocr_text"]).lower()
+            signals["ocr_present"] = True
+            if exp_username and exp_username.strip().lower() in ocr_lower:
+                signals["ocr_username_match"] = True
+            if expected.name and expected.name.strip().lower() in ocr_lower:
+                signals["ocr_name_match"] = True
+
         return signals
 
     def calculate_confidence(self, signals: Dict[str, Any]) -> float:
@@ -85,8 +94,15 @@ class SimpleVerificationEngine(VerificationEngine):
             score += 0.50
         if signals.get("username_match"):
             score += 0.30
+        elif signals.get("ocr_username_match"):
+            # Corroborating OCR fallback when DOM header is obscured
+            score += 0.25
+
         if signals.get("name_match"):
             score += 0.15
+        elif signals.get("ocr_name_match"):
+            score += 0.10
+
         if signals.get("follower_close"):
             score += 0.05
 
